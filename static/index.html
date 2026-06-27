@@ -39,6 +39,7 @@
   <div class="tab active" id="tabBt" onclick="show('bt')">📊 Backtest</div>
   <div class="tab" id="tabPp" onclick="show('pp')">⚡ Paper Trading (Live)</div>
   <div class="tab" id="tabRl" onclick="show('rl')">🔴 Real Trading</div>
+  <div class="tab" id="tabSt" onclick="show('st')">⚙️ Settings</div>
 </div>
 <main>
   <!-- BACKTEST -->
@@ -129,10 +130,23 @@
       <pre id="rlLog"></pre>
     </section>
   </div>
+
+  <!-- SETTINGS -->
+  <div id="st" class="hidden">
+    <section class="card">
+      <h3 style="margin:0 0 6px">⚙️ Dhan Credentials</h3>
+      <p style="font-size:12px;color:var(--mut)">Paste your Dhan token here when it expires — no need to edit code. Saved to .env (stays local, never committed to git).</p>
+      <label>Client ID</label><input id="stCid" placeholder="1110569990">
+      <label>Access Token (paste fresh token here)</label><input id="stTok" placeholder="eyJ0eXAiOiJKV1Qi...">
+      <button style="background:var(--green)" onclick="stSave()">💾 Save</button>
+      <button style="background:#0a7ea4" onclick="stTest()">🔌 Test Connection</button>
+      <div id="stStatus" style="font-size:13px;margin-top:12px"></div>
+    </section>
+  </div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
-function show(t){['bt','pp','rl'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});}
+function show(t){['bt','pp','rl','st'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});if(t==='st')stLoad();}
 async function post(u,b){return (await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();}
 // ---- backtest ----
 function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instrument_type:'INDEX',
@@ -194,6 +208,14 @@ async function rlRefresh(){const s=await(await fetch('/api/real/state')).json();
   let c='';(s.closed||[]).forEach(p=>c+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.exit_ltp}</td><td style="color:var(--mut)">${p.exit_reason}</td><td class="${p.pnl>=0?'pos':'neg'}">₹${p.pnl}</td></tr>`);
   $('rlClosed').querySelector('tbody').innerHTML=c;
   $('rlLog').textContent=(s.log||[]).map(l=>`${l.time}  ${l.msg}`).join('\n');}
+// ---- settings ----
+async function stLoad(){const s=await(await fetch('/api/settings')).json();
+  $('stCid').value=s.client_id||'';
+  $('stStatus').innerHTML=s.token_set?`<span class="pos">Token set:</span> ${s.token_masked}`:'<span class="neg">No token set</span>';}
+async function stSave(){const r=await post('/api/settings',{client_id:$('stCid').value,access_token:$('stTok').value});
+  if(r.saved){$('stTok').value='';$('stStatus').innerHTML='<span class="pos">Saved ✓</span>';stLoad();}}
+async function stTest(){$('stStatus').textContent='Testing…';const r=await post('/api/settings/test',{});
+  $('stStatus').innerHTML=`<span class="${r.ok?'pos':'neg'}">${r.msg}</span>`;}
 loadCfg();ppRefresh();rlRefresh();setInterval(()=>{ppRefresh();rlRefresh();},5000);
 </script>
 </body>

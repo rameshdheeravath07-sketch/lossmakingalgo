@@ -5,7 +5,7 @@ Run:  uvicorn app:app --reload
 Open: http://127.0.0.1:8000
 """
 from __future__ import annotations
-import io
+import io, os, re
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -166,6 +166,56 @@ def real_stop():
 @app.get("/api/real/state")
 def real_state():
     return real_trader.state_json()
+
+
+# ---- Settings: manage Dhan token from the UI ----
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+
+
+def _update_env(updates: dict):
+    lines = open(ENV_PATH).read().splitlines() if os.path.exists(ENV_PATH) else []
+    seen, out = set(), []
+    for ln in lines:
+        m = re.match(r"^(\w+)=", ln)
+        if m and m.group(1) in updates:
+            out.append(f"{m.group(1)}={updates[m.group(1)]}"); seen.add(m.group(1))
+        else:
+            out.append(ln)
+    for k, v in updates.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+    open(ENV_PATH, "w").write("\n".join(out) + "\n")
+
+
+class Creds(BaseModel):
+    client_id: str = ""
+    access_token: str = ""
+
+
+@app.get("/api/settings")
+def get_settings():
+    tok = config.DHAN_ACCESS_TOKEN
+    return {"client_id": config.DHAN_CLIENT_ID, "token_set": bool(tok),
+            "token_masked": (tok[:6] + "…" + tok[-4:]) if tok and len(tok) > 12 else ("set" if tok else "")}
+
+
+@app.post("/api/settings")
+def save_settings(c: Creds):
+    if c.client_id.strip():
+        config.DHAN_CLIENT_ID = c.client_id.strip()
+    if c.access_token.strip():
+        config.DHAN_ACCESS_TOKEN = c.access_token.strip()
+    _update_env({"DHAN_CLIENT_ID": config.DHAN_CLIENT_ID, "DHAN_ACCESS_TOKEN": config.DHAN_ACCESS_TOKEN})
+    return {"saved": True}
+
+
+@app.post("/api/settings/test")
+def test_settings():
+    try:
+        exps = client.expiry_list(config.UNDER_SCRIP, "IDX_I")
+        return {"ok": True, "msg": f"Connected ✓  nearest expiry {exps[0] if exps else '?'}"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
