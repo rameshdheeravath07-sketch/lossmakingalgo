@@ -1,0 +1,20 @@
+# NEVER commit secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# scratch / data
+*.csv
+scratchpad/
+_*.py

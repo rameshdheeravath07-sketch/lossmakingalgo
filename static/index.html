@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VWAP-Cross Options</title>
+<style>
+  :root{--bg:#0e1117;--card:#161b22;--bd:#30363d;--green:#089981;--red:#f23645;--tx:#c9d1d9;--mut:#8b949e}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--tx)}
+  header{padding:16px 24px;border-bottom:1px solid var(--bd)}
+  h1{font-size:18px;margin:0}
+  .cfg{font-size:12px;color:var(--mut);margin-top:6px}
+  .tabs{display:flex;gap:8px;padding:12px 24px 0}
+  .tab{padding:9px 18px;border:1px solid var(--bd);border-bottom:none;border-radius:8px 8px 0 0;cursor:pointer;background:#0d1117;color:var(--mut)}
+  .tab.active{background:var(--card);color:var(--tx);font-weight:600}
+  main{max-width:820px;margin:auto;padding:24px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:18px;margin-bottom:16px}
+  label{display:block;font-size:12px;color:var(--mut);margin:8px 0 4px}
+  input{width:100%;padding:9px;border-radius:6px;border:1px solid var(--bd);background:#0d1117;color:var(--tx)}
+  button{width:100%;padding:11px;border-radius:6px;border:none;color:#fff;font-weight:600;margin-top:10px;cursor:pointer}
+  .row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd)}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .grid3,.grid4{display:grid;gap:10px;text-align:center;margin-top:12px}
+  .grid3{grid-template-columns:repeat(3,1fr)}.grid4{grid-template-columns:repeat(4,1fr)}
+  .stat{background:#0d1117;border:1px solid var(--bd);border-radius:8px;padding:10px}
+  .stat .v{font-size:20px;font-weight:700}.stat .k{font-size:11px;color:var(--mut)}
+  pre{white-space:pre-wrap;font-size:12px;color:var(--mut);max-height:240px;overflow:auto}
+  .pill{font-size:12px;padding:3px 10px;border-radius:20px;border:1px solid var(--bd)}
+  .live{background:var(--green);color:#fff}.off{background:#6e7681;color:#fff}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1>📈 VWAP-Cross Options</h1><div class="cfg" id="cfg">…</div></header>
+<div class="tabs">
+  <div class="tab active" id="tabBt" onclick="show('bt')">📊 Backtest</div>
+  <div class="tab" id="tabPp" onclick="show('pp')">⚡ Paper Trading (Live)</div>
+  <div class="tab" id="tabRl" onclick="show('rl')">🔴 Real Trading</div>
+</div>
+<main>
+  <!-- BACKTEST -->
+  <div id="bt">
+    <section class="card">
+      <div class="row">
+        <div><label>Security ID</label><input id="sec" value="13"></div>
+        <div><label>Interval (min / D)</label><input id="itv" value="3"></div>
+        <div><label>Days back</label><input id="days" value="90"></div>
+      </div>
+      <div class="row">
+        <div><label>Option delta</label><input id="delta" value="0.6"></div>
+        <div><label>Capital (₹)</label><input id="cap" value="15000"></div>
+        <div><label>Inspect bar time</label><input id="at" placeholder="2026-06-25 06:30:00"></div>
+      </div>
+      <button style="background:var(--green)" onclick="bt()">⬇ Fetch from Dhan & Backtest</button>
+      <button style="background:#0a7ea4" onclick="sweepVwap()">📐 VWAP Threshold Sweep</button>
+      <button style="background:#0e7490" onclick="sweepTgt()">🎯 Profit-Target Sweep</button>
+      <button style="background:#15803d" onclick="wf()">✅ Out-of-Sample Test</button>
+      <button style="background:#bb8009" onclick="insp()">🔎 Inspect that bar</button>
+    </section>
+    <section class="card" id="out"><p style="color:var(--mut)">Run a backtest to see results.</p></section>
+  </div>
+
+  <!-- PAPER TRADING -->
+  <div id="pp" class="hidden">
+    <section class="card">
+      <h3 style="margin:0 0 6px">⚡ Live Paper Trading <span id="ppPill" class="pill off">OFF</span></h3>
+      <p style="font-size:12px;color:var(--mut)">No real orders. Trades the live option chain on paper, sized to your current capital.</p>
+      <div class="row">
+        <div><label>Starting capital (₹)</label><input id="ppCap" value="15000"></div>
+        <div><label>Interval (min)</label><input id="ppItv" value="3"></div>
+        <div><label>Ignore market hours?</label><input id="ppIgnore" value="no"></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button style="background:var(--green)" onclick="ppStart()">▶ Start Paper Bot</button>
+        <button style="background:#6e7681" onclick="ppStop()">⏹ Stop</button>
+      </div>
+    </section>
+    <section class="card">
+      <div class="grid4">
+        <div class="stat"><div class="v" id="ppCapV">—</div><div class="k">Capital</div></div>
+        <div class="stat"><div class="v" id="ppPnl">—</div><div class="k">P&L</div></div>
+        <div class="stat"><div class="v" id="ppWin">—</div><div class="k">Win rate</div></div>
+        <div class="stat"><div class="v" id="ppSpot">—</div><div class="k">NIFTY spot</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--mut);margin-top:8px" id="ppMeta"></p>
+      <h4 style="margin:14px 0 0">Open positions</h4>
+      <table id="ppOpen"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>Entry₹</th><th>Δ</th><th>Time</th></tr></thead><tbody></tbody></table>
+      <h4 style="margin:16px 0 0">Closed trades</h4>
+      <table id="ppClosed"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>In</th><th>Out</th><th>Why</th><th>P&L</th></tr></thead><tbody></tbody></table>
+      <h4 style="margin:16px 0 0">Log</h4>
+      <pre id="ppLog"></pre>
+    </section>
+  </div>
+
+  <!-- REAL TRADING -->
+  <div id="rl" class="hidden">
+    <section class="card" style="border-color:var(--red)">
+      <h3 style="margin:0 0 6px;color:var(--red)">🔴 REAL MONEY TRADING <span id="rlPill" class="pill off">OFF</span></h3>
+      <p style="font-size:12px;color:var(--red)">⚠ This places LIVE orders with real money on your Dhan account. Losses are real. Do NOT use until paper trading has proven the strategy for several weeks. Set <b>LIVE_TRADING=true</b> in .env to enable.</p>
+      <label>To arm, type exactly: <b>I UNDERSTAND THE RISK</b></label>
+      <input id="rlArm" placeholder="I UNDERSTAND THE RISK">
+      <button style="background:#b45309" onclick="rlArmBtn()">🔓 Arm</button>
+      <div class="row" style="margin-top:8px">
+        <div><label>Lots (max from .env)</label><input id="rlLots" value="1"></div>
+        <div><label>Interval (min)</label><input id="rlItv" value="3"></div>
+        <div></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button style="background:var(--red)" onclick="rlStart()">▶ Start REAL Bot</button>
+        <button style="background:#6e7681" onclick="rlStop()">⏹ KILL SWITCH (stop + square off)</button>
+      </div>
+    </section>
+    <section class="card">
+      <div class="grid4">
+        <div class="stat"><div class="v" id="rlRealized">—</div><div class="k">Realized P&L</div></div>
+        <div class="stat"><div class="v" id="rlWin">—</div><div class="k">Win rate</div></div>
+        <div class="stat"><div class="v" id="rlArmed">—</div><div class="k">Armed</div></div>
+        <div class="stat"><div class="v" id="rlSpot">—</div><div class="k">NIFTY spot</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--mut);margin-top:8px" id="rlMeta"></p>
+      <h4 style="margin:14px 0 0">Open positions</h4>
+      <table id="rlOpen"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>Entry₹</th><th>Δ</th><th>Time</th></tr></thead><tbody></tbody></table>
+      <h4 style="margin:16px 0 0">Closed</h4>
+      <table id="rlClosed"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>In</th><th>Out</th><th>Why</th><th>P&L</th></tr></thead><tbody></tbody></table>
+      <h4 style="margin:16px 0 0">Log</h4>
+      <pre id="rlLog"></pre>
+    </section>
+  </div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function show(t){['bt','pp','rl'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});}
+async function post(u,b){return (await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();}
+// ---- backtest ----
+function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instrument_type:'INDEX',
+  interval:$('itv').value,days:parseInt($('days').value),option_delta:parseFloat($('delta').value),capital:parseFloat($('cap').value)};}
+async function loadCfg(){const c=await(await fetch('/api/config')).json();
+  $('cfg').textContent=`VWAP ${c.vwap_points}pt · target ${c.target_pct}% · stop ${c.stop_pct}% · BE ${c.breakeven_pct}% · ₹${c.capital} · max ${c.max_trades_day}/day`;}
+function renderBT(r){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
+  const s=r.summary;let h='';if(r.candles)h+=`<p style="color:var(--mut);font-size:12px">${r.candles} candles · ${r.from} → ${r.to}</p>`;
+  h+=`<div class="grid3"><div class="stat"><div class="v">${s.trades}</div><div class="k">Trades</div></div>
+    <div class="stat"><div class="v">${s.win_rate}%</div><div class="k">Win rate</div></div>
+    <div class="stat"><div class="v ${s.net_pnl>=0?'pos':'neg'}">₹${s.net_pnl}</div><div class="k">Net P&L</div></div></div>
+    <p style="font-size:12px;color:var(--mut)">Wins ${s.wins} · Losses ${s.losses} · PF ${s.profit_factor??'—'} · Avg ₹${s.avg_pnl}</p>`;
+  h+='<table><thead><tr><th>Entry</th><th>Side</th><th>In</th><th>Out</th><th>Why exit</th><th>P&L</th></tr></thead><tbody>';
+  r.trades.slice(-40).reverse().forEach(t=>h+=`<tr><td>${t.entry_time}</td><td>${t.side}</td><td>${t.entry}</td><td>${t.exit}</td><td style="color:var(--mut)">${t.reason}</td><td class="${t.pnl>=0?'pos':'neg'}">₹${t.pnl}</td></tr>`);
+  $('out').innerHTML=h+'</tbody></table>';}
+function renderSweep(r,key,label){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
+  let h=`<table><thead><tr><th>${label}</th><th>Trades</th><th>Win%</th><th>PF</th><th>Net P&L</th></tr></thead><tbody>`;
+  r.results.forEach(x=>h+=`<tr><td>${x[key]}</td><td>${x.trades}</td><td>${x.win_rate}</td><td>${x.profit_factor??'—'}</td><td class="${x.net_pnl>=0?'pos':'neg'}">₹${x.net_pnl}</td></tr>`);
+  $('out').innerHTML=h+'</tbody></table>';}
+async function bt(){$('out').innerHTML='Running…';renderBT(await post('/api/backtest-dhan',body()));}
+async function sweepVwap(){$('out').innerHTML='Sweeping…';renderSweep(await post('/api/sweep-vwap',body()),'threshold','VWAP pts');}
+async function sweepTgt(){$('out').innerHTML='Sweeping…';renderSweep(await post('/api/sweep-target',body()),'target_pct','Target%');}
+async function wf(){$('out').innerHTML='Testing…';const r=await post('/api/walkforward',body());if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
+  const ok=r.verdict==='ROBUST';$('out').innerHTML=`<div style="border:2px solid ${ok?'var(--green)':'var(--red)'};border-radius:8px;padding:12px">
+    <b style="color:${ok?'var(--green)':'var(--red)'}">${ok?'✅ ROBUST':'❌ '+r.verdict}</b><br>Threshold on train: ${r.train_best_threshold}<br>
+    TRAIN: win ${r.train_summary.win_rate}% · PF ${r.train_summary.profit_factor} · <span class="${r.train_summary.net_pnl>=0?'pos':'neg'}">₹${r.train_summary.net_pnl}</span><br>
+    TEST (blind): win ${r.test_summary.win_rate}% · PF ${r.test_summary.profit_factor} · <span class="${r.test_summary.net_pnl>=0?'pos':'neg'}">₹${r.test_summary.net_pnl}</span></div>`;}
+async function insp(){const b=body();b.at=$('at').value||null;b.window=6;const r=await post('/api/inspect-dhan',b);if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
+  const k=Object.keys(r.rows[0]);let h=`<p style="font-size:12px;color:var(--mut)">Around ${r.center}</p><table><thead><tr>`;k.forEach(x=>h+=`<th>${x}</th>`);h+='</tr></thead><tbody>';
+  r.rows.forEach(row=>{h+='<tr>';k.forEach(x=>{let v=row[x];let cls=(x==='signal'&&(v==='BUY'||v==='SELL'))?'pos':'';h+=`<td class="${cls}">${v}</td>`;});h+='</tr>';});$('out').innerHTML=h+'</tbody></table>';}
+// ---- paper ----
+async function ppStart(){const r=await post('/api/paper/start',{capital:parseFloat($('ppCap').value),interval:$('ppItv').value,ignore_hours:$('ppIgnore').value.toLowerCase().startsWith('y')});if(r.result&&r.result!=='started'&&r.result!=='already running')alert(r.result);ppRefresh();}
+async function ppStop(){await post('/api/paper/stop',{});ppRefresh();}
+async function ppRefresh(){const s=await(await fetch('/api/paper/state')).json();
+  const p=$('ppPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
+  $('ppCapV').textContent='₹'+(s.capital??0);
+  $('ppPnl').innerHTML=`<span class="${s.pnl>=0?'pos':'neg'}">₹${s.pnl??0}</span>`;
+  $('ppWin').textContent=(s.win_rate??0)+'%';
+  $('ppSpot').textContent=s.spot??'—';
+  $('ppMeta').textContent=`Expiry ${s.expiry||'—'} · trades today ${s.trades_today||0} · closed ${s.closed_count||0} · start ₹${s.start_capital||0}`;
+  let o='';(s.open||[]).forEach(p=>o+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.delta}</td><td>${p.entry_time}</td></tr>`);
+  $('ppOpen').querySelector('tbody').innerHTML=o;
+  let c='';(s.closed||[]).forEach(p=>c+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.exit_ltp}</td><td style="color:var(--mut)">${p.exit_reason}</td><td class="${p.pnl>=0?'pos':'neg'}">₹${p.pnl}</td></tr>`);
+  $('ppClosed').querySelector('tbody').innerHTML=c;
+  $('ppLog').textContent=(s.log||[]).map(l=>`${l.time}  ${l.msg}`).join('\n');}
+// ---- real ----
+async function rlArmBtn(){const r=await post('/api/real/arm',{phrase:$('rlArm').value});alert(r.armed?'ARMED — orders enabled':'Arm failed: type the exact phrase');rlRefresh();}
+async function rlStart(){if(!confirm('Start REAL money trading? Live orders will be placed.'))return;const r=await post('/api/real/start',{lots:parseInt($('rlLots').value),interval:$('rlItv').value});if(r.result!=='started')alert(r.result);rlRefresh();}
+async function rlStop(){await post('/api/real/stop',{});rlRefresh();}
+async function rlRefresh(){const s=await(await fetch('/api/real/state')).json();
+  const p=$('rlPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
+  $('rlRealized').innerHTML=`<span class="${s.realized>=0?'pos':'neg'}">₹${s.realized??0}</span>`;
+  $('rlWin').textContent=(s.win_rate??0)+'%';
+  $('rlArmed').innerHTML=s.armed?'<span class="pos">YES</span>':'<span class="neg">NO</span>';
+  $('rlSpot').textContent=s.spot??'—';
+  $('rlMeta').textContent=`LIVE_TRADING=${s.live_trading} · expiry ${s.expiry||'—'} · trades today ${s.trades_today||0} · closed ${s.closed_count||0}`;
+  let o='';(s.open||[]).forEach(p=>o+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.delta}</td><td>${p.entry_time}</td></tr>`);
+  $('rlOpen').querySelector('tbody').innerHTML=o;
+  let c='';(s.closed||[]).forEach(p=>c+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.exit_ltp}</td><td style="color:var(--mut)">${p.exit_reason}</td><td class="${p.pnl>=0?'pos':'neg'}">₹${p.pnl}</td></tr>`);
+  $('rlClosed').querySelector('tbody').innerHTML=c;
+  $('rlLog').textContent=(s.log||[]).map(l=>`${l.time}  ${l.msg}`).join('\n');}
+loadCfg();ppRefresh();rlRefresh();setInterval(()=>{ppRefresh();rlRefresh();},5000);
+</script>
+</body>
+</html>
