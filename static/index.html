@@ -31,6 +31,40 @@
   .pill{font-size:12px;padding:3px 10px;border-radius:20px;border:1px solid var(--bd)}
   .live{background:var(--green);color:#fff}.off{background:#6e7681;color:#fff}
   .hidden{display:none}
+  /* wrap wide tables so they scroll instead of breaking layout */
+  .card{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+  /* ---- Mobile (iPhone / Android) ---- */
+  @media (max-width:680px){
+    html{-webkit-text-size-adjust:100%}
+    header{padding:12px 14px;position:sticky;top:0;z-index:20;background:var(--bg)}
+    h1{font-size:16px}
+    .cfg{font-size:11px}
+    /* tabs: horizontal scroll, no wrap, sticky under header */
+    .tabs{gap:6px;padding:10px 12px 0;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;
+          position:sticky;top:48px;z-index:19;background:var(--bg)}
+    .tab{padding:8px 12px;font-size:13px;white-space:nowrap;flex:0 0 auto;border-radius:8px}
+    main{padding:12px}
+    .card{padding:13px;margin-bottom:12px}
+    /* stack all multi-column rows */
+    .row{grid-template-columns:1fr;gap:8px}
+    .grid3,.grid4{grid-template-columns:repeat(2,1fr)}
+    .stat .v{font-size:17px}
+    /* full-width tap-friendly buttons; stack button groups */
+    button{padding:13px;font-size:15px}
+    div[style*="display:flex"][style*="gap:10px"]{flex-wrap:wrap}
+    div[style*="flex:0 0 200px"]{flex:1 1 100% !important}
+    /* tables scroll horizontally inside their card */
+    table{font-size:12px;min-width:520px}
+    th,td{padding:6px 7px;white-space:nowrap}
+    input{padding:11px;font-size:16px}   /* 16px stops iOS auto-zoom on focus */
+    pre{font-size:11px;max-height:180px}
+  }
+  @media (max-width:380px){
+    .grid3,.grid4{grid-template-columns:1fr 1fr}
+    .stat .v{font-size:15px}
+    .tab{padding:7px 10px;font-size:12px}
+  }
 </style>
 </head>
 <body>
