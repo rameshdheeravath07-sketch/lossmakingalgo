@@ -136,6 +136,28 @@ def paper_stop():
     return {"result": paper_trader.stop()}
 
 
+class AmountReq(BaseModel):
+    amount: float = 0
+
+
+@app.post("/api/paper/reset")
+def paper_reset(req: AmountReq):
+    """Set a fresh starting balance (wipes history)."""
+    return {"result": paper_trader.set_capital(req.amount)}
+
+
+@app.post("/api/paper/withdraw")
+def paper_withdraw(req: AmountReq):
+    """Fake-withdraw cash; trading continues on the remaining balance."""
+    return {"result": paper_trader.withdraw(req.amount)}
+
+
+@app.get("/api/paper/account")
+def paper_account():
+    """Persisted balance + per-day history + withdrawals (survives restarts)."""
+    return paper_trader.account_state()
+
+
 @app.get("/api/paper/state")
 def paper_state():
     return paper_trader.state_json()
@@ -239,6 +261,12 @@ def test_settings():
         return {"ok": True, "msg": f"Connected ✓  nearest expiry {exps[0] if exps else '?'}"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
+
+
+@app.on_event("startup")
+def _start_auto_scheduler():
+    """Auto-start paper trading at 9:15 IST and stop at 15:15, every weekday."""
+    paper_trader.start_scheduler()
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

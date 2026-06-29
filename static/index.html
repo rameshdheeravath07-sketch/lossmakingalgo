@@ -67,17 +67,36 @@
   <!-- PAPER TRADING -->
   <div id="pp" class="hidden">
     <section class="card">
-      <h3 style="margin:0 0 6px">⚡ Live Paper Trading <span id="ppPill" class="pill off">OFF</span></h3>
-      <p style="font-size:12px;color:var(--mut)">No real orders. Trades the live option chain on paper, sized to your current capital.</p>
+      <h3 style="margin:0 0 6px">⚡ Live Paper Trading <span id="ppPill" class="pill off">OFF</span> <span id="ppAuto" class="pill off">AUTO 9:15–15:15</span></h3>
+      <p style="font-size:12px;color:var(--mut)">No real orders. <b>Auto-starts at 9:15 and squares off at 15:15 every weekday</b> — you don't need to click Start. Balance carries over day to day (compounding) and is saved.</p>
       <div class="row">
-        <div><label>Starting capital (₹)</label><input id="ppCap" value="15000"></div>
+        <div><label>Set / deposit balance (₹)</label><input id="ppCap" value="15000"></div>
         <div><label>Interval (min)</label><input id="ppItv" value="3"></div>
         <div><label>Ignore market hours?</label><input id="ppIgnore" value="no"></div>
       </div>
-      <div style="display:flex;gap:10px">
-        <button style="background:var(--green)" onclick="ppStart()">▶ Start Paper Bot</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button style="background:#2563eb" onclick="ppReset()">💰 Set Balance (new account)</button>
+        <button style="background:var(--green)" onclick="ppStart()">▶ Start now</button>
         <button style="background:#6e7681" onclick="ppStop()">⏹ Stop</button>
       </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">
+        <div style="flex:0 0 200px"><label>Withdraw amount (₹)</label><input id="ppWd" value=""></div>
+        <button style="background:#b45309" onclick="ppWithdraw()">🏧 Withdraw</button>
+        <span style="font-size:12px;color:var(--mut)">Takes cash out of the balance; trading continues on what's left.</span>
+      </div>
+    </section>
+    <section class="card">
+      <h3 style="margin:0 0 8px">🏦 Account (saved)</h3>
+      <div class="grid4">
+        <div class="stat"><div class="v" id="acBal">—</div><div class="k">Balance</div></div>
+        <div class="stat"><div class="v" id="acInit">—</div><div class="k">Initial deposit</div></div>
+        <div class="stat"><div class="v" id="acPnl">—</div><div class="k">Total P&L (all days)</div></div>
+        <div class="stat"><div class="v" id="acWd">—</div><div class="k">Total withdrawn</div></div>
+      </div>
+      <h4 style="margin:14px 0 0">Past paper-trading days</h4>
+      <table id="acDaily"><thead><tr><th>Date</th><th>Start ₹</th><th>End ₹</th><th>Day P&L</th><th>Trades</th><th>Wins</th></tr></thead><tbody></tbody></table>
+      <h4 style="margin:16px 0 0">Withdrawals</h4>
+      <table id="acWdT"><thead><tr><th>Date</th><th>Amount ₹</th></tr></thead><tbody></tbody></table>
     </section>
     <section class="card">
       <div class="grid4">
@@ -155,7 +174,7 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
-function show(t){['bt','pp','rl','st'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});if(t==='st')stLoad();if(t==='rl')rlLoadFunds();}
+function show(t){['bt','pp','rl','st'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});if(t==='st')stLoad();if(t==='rl')rlLoadFunds();if(t==='pp')ppAccount();}
 async function post(u,b){return (await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();}
 // ---- backtest ----
 function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instrument_type:'INDEX',
@@ -188,7 +207,18 @@ async function insp(){const b=body();b.at=$('at').value||null;b.window=6;const r
   r.rows.forEach(row=>{h+='<tr>';k.forEach(x=>{let v=row[x];let cls=(x==='signal'&&(v==='BUY'||v==='SELL'))?'pos':'';h+=`<td class="${cls}">${v}</td>`;});h+='</tr>';});$('out').innerHTML=h+'</tbody></table>';}
 // ---- paper ----
 async function ppStart(){const r=await post('/api/paper/start',{capital:parseFloat($('ppCap').value),interval:$('ppItv').value,ignore_hours:$('ppIgnore').value.toLowerCase().startsWith('y')});if(r.result&&r.result!=='started'&&r.result!=='already running')alert(r.result);}
-async function ppStop(){await post('/api/paper/stop',{});}
+async function ppStop(){await post('/api/paper/stop',{});ppAccount();}
+async function ppReset(){if(!confirm('Set a NEW balance? This wipes saved history and starts fresh.'))return;const r=await post('/api/paper/reset',{amount:parseFloat($('ppCap').value)});alert(r.result);ppAccount();}
+async function ppWithdraw(){const a=parseFloat($('ppWd').value);if(!a){alert('Enter an amount');return;}const r=await post('/api/paper/withdraw',{amount:a});alert(r.result);$('ppWd').value='';ppAccount();}
+async function ppAccount(){const a=await(await fetch('/api/paper/account')).json();
+  $('acBal').textContent='₹'+(a.capital??0);
+  $('acInit').textContent='₹'+(a.initial??0);
+  $('acPnl').innerHTML=`<span class="${(a.total_pnl??0)>=0?'pos':'neg'}">₹${a.total_pnl??0}</span>`;
+  $('acWd').textContent='₹'+(a.total_withdrawn??0);
+  let d='';(a.daily||[]).forEach(x=>d+=`<tr><td>${x.date}</td><td>₹${x.start}</td><td>₹${x.end}</td><td class="${x.pnl>=0?'pos':'neg'}">₹${x.pnl}</td><td>${x.trades}</td><td>${x.wins}</td></tr>`);
+  $('acDaily').querySelector('tbody').innerHTML=d||'<tr><td colspan=6 style="color:var(--mut)">No completed days yet</td></tr>';
+  let w='';(a.withdrawals||[]).forEach(x=>w+=`<tr><td>${x.date}</td><td>₹${x.amount}</td></tr>`);
+  $('acWdT').querySelector('tbody').innerHTML=w||'<tr><td colspan=2 style="color:var(--mut)">None</td></tr>';}
 // ---- real ----
 async function rlArmBtn(){const r=await post('/api/real/arm',{phrase:$('rlArm').value});alert(r.armed?'ARMED — orders enabled':'Arm failed: type the exact phrase');rlRefresh();}
 async function rlStart(){if(!confirm('Start REAL money trading? Live orders will be placed.'))return;const r=await post('/api/real/start',{lots:parseInt($('rlLots').value),interval:$('rlItv').value});if(r.result!=='started')alert(r.result);rlRefresh();}
@@ -226,6 +256,7 @@ function startSSE(){
 }
 function updatePP(s){
   const p=$('ppPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
+  const ap=$('ppAuto');if(ap){ap.textContent=s.auto?'AUTO ▶ running':'AUTO 9:15–15:15';ap.className='pill '+(s.auto?'live':'off');}
   $('ppCapV').textContent='₹'+(s.capital??0);
   $('ppPnl').innerHTML=`<span class="${(s.pnl??0)>=0?'pos':'neg'}">₹${s.pnl??0}</span>`;
   $('ppUpnl').innerHTML=`<span class="${(s.unrealized??0)>=0?'pos':'neg'}">₹${s.unrealized??0}</span>`;

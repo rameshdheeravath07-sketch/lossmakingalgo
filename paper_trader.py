@@ -22,6 +22,7 @@ from dhan_client import client
 from strategy import get_signals
 from reversal import adx_value
 import engine
+import persistence
 
 
 def _now_ist():
@@ -32,6 +33,7 @@ STATE = {
     "expiry": None, "open": [], "closed": [], "log": [],
     "last_bar": None, "trades_today": 0, "trade_day": None, "params": {},
     "consec_losses": 0, "halted": False, "day_pnl": 0.0, "regime": None, "adx": 0,
+    "day_start_capital": 0.0, "day_wins": 0, "auto": False,
 }
 _stop = threading.Event()
 _thread = None
@@ -59,28 +61,112 @@ def _check_day():
         STATE["day_pnl"] = 0.0
 
 
-def start(capital, interval="3", ignore_hours=False):
+def set_capital(capital):
+    """Start a fresh account (wipes history). Use to (re)deposit a new balance."""
+    if STATE["running"]:
+        return "stop trading before resetting capital"
+    persistence.reset(float(capital))
+    return f"account set to Rs.{round(float(capital))}"
+
+
+def withdraw(amount):
+    """Fake-withdraw cash from the rolling balance; trading continues on the rest."""
+    acct = persistence.load()
+    amt = float(amount)
+    if amt <= 0 or amt > acct["capital"]:
+        return f"invalid amount (balance Rs.{round(acct['capital'])})"
+    acct["capital"] -= amt
+    acct["withdrawals"].insert(0, {"date": _now_ist().strftime("%Y-%m-%d %H:%M"), "amount": amt})
+    persistence.save(acct)
+    if STATE["running"]:
+        STATE["capital"] -= amt          # reflect live so position sizing uses it
+    _log(f"WITHDRAW Rs.{round(amt)} — balance now Rs.{round(acct['capital'])}")
+    return f"withdrew Rs.{round(amt)}; balance Rs.{round(acct['capital'])}"
+
+
+def start(capital=None, interval="3", ignore_hours=False, auto=False):
+    """Resume the persisted (carried-over) balance and begin trading.
+    If no account exists yet, initialise it from `capital`."""
     global _thread
     if STATE["running"]:
         return "already running"
+    acct = persistence.load()
+    if acct["capital"] > 0:
+        cap = acct["capital"]                       # carry over earned balance
+    elif capital and float(capital) > 0:
+        acct = persistence.reset(float(capital))     # first-time deposit
+        cap = float(capital)
+    else:
+        return "no balance — set starting capital first"
     try:
         exps = client.expiry_list(config.UNDER_SCRIP, "IDX_I")
     except Exception as e:
         return f"expiry fetch failed: {e}"
-    STATE.update(running=True, capital=float(capital), start_capital=float(capital),
-                 open=[], closed=[], log=[], last_bar=None,
+    STATE.update(running=True, capital=cap, start_capital=cap, day_start_capital=cap,
+                 day_wins=0, open=[], closed=[], log=[], last_bar=None, auto=bool(auto),
+                 trades_today=0, day_pnl=0.0, consec_losses=0, halted=False,
+                 trade_day=_now_ist().date().isoformat(),
                  expiry=exps[0] if exps else None,
                  params={"interval": str(interval), "ignore_hours": ignore_hours})
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True)
     _thread.start()
     threading.Thread(target=_tick_loop, daemon=True).start()   # fast live ticking
-    _log(f"PAPER START — capital Rs.{capital}, expiry {STATE['expiry']}")
+    _log(f"PAPER START{' [AUTO]' if auto else ''} — balance Rs.{round(cap)}, expiry {STATE['expiry']}")
     return "started"
+
+
+_sched_thread = None
+_sched_stop = threading.Event()
+AUTO_START = dtime(9, 15)
+AUTO_STOP = dtime(15, 15)
+
+
+def start_scheduler():
+    """Background clock: auto-start at 9:15 IST and auto-stop at 15:15, weekdays.
+    Only acts if an account balance exists. Safe to call once at app startup."""
+    global _sched_thread
+    if _sched_thread and _sched_thread.is_alive():
+        return
+    _sched_stop.clear()
+    _sched_thread = threading.Thread(target=_sched_loop, daemon=True)
+    _sched_thread.start()
+
+
+def _sched_loop():
+    while not _sched_stop.is_set():
+        try:
+            n = _now_ist()
+            weekday = n.weekday() < 5
+            in_session = AUTO_START <= n.time() < AUTO_STOP
+            if weekday and in_session and not STATE["running"]:
+                if persistence.load()["capital"] > 0:
+                    start(auto=True)                 # resume carried-over balance
+            elif STATE["running"] and STATE.get("auto") and n.time() >= AUTO_STOP:
+                stop()                               # square-off shutdown
+        except Exception as e:
+            _log(f"scheduler error: {e}")
+        _sched_stop.wait(20)
+
+
+def _finalize_day():
+    """Record the day's result to the persistent account (one row per day)."""
+    acct = persistence.load()
+    acct["capital"] = round(STATE["capital"], 2)
+    day = STATE.get("trade_day") or _now_ist().date().isoformat()
+    if STATE["closed"] or STATE["day_pnl"]:
+        acct["daily"].insert(0, {
+            "date": day, "start": round(STATE["day_start_capital"], 2),
+            "end": round(STATE["capital"], 2), "pnl": round(STATE["day_pnl"], 2),
+            "trades": len(STATE["closed"]), "wins": STATE["day_wins"],
+        })
+    persistence.save(acct)
 
 
 def stop():
     _stop.set()
+    if STATE["running"]:
+        _finalize_day()
     STATE["running"] = False
     _log("PAPER STOP")
     return "stopped"
@@ -223,10 +309,26 @@ def _exit(pos, reason):
     STATE["capital"] += pnl
     STATE["day_pnl"] += pnl
     STATE["consec_losses"] = STATE["consec_losses"] + 1 if pnl < 0 else 0
+    if pnl > 0:
+        STATE["day_wins"] += 1
     pos.update(exit_ltp=ltp, exit_reason=reason, pnl=round(pnl, 2),
                exit_time=_now_ist().strftime("%H:%M:%S"))
     STATE["open"].remove(pos)
     STATE["closed"].insert(0, pos)
+    # persist the trade + rolling balance immediately (survives restart)
+    try:
+        acct = persistence.load()
+        acct["capital"] = round(STATE["capital"], 2)
+        acct["trades"].insert(0, {
+            "date": STATE.get("trade_day"), "time": pos["exit_time"],
+            "side": pos["signal"], "opt_type": pos["opt_type"], "strike": pos["strike"],
+            "entry": pos["entry_ltp"], "exit": round(ltp, 2),
+            "pnl": round(pnl, 2), "reason": reason,
+        })
+        acct["trades"] = acct["trades"][:1000]
+        persistence.save(acct)
+    except Exception:
+        pass
     _log(f"EXIT [{reason}] {pos['opt_type']} {pos['strike']} @Rs.{ltp} "
          f"P&L Rs.{round(pnl)} | capital Rs.{round(STATE['capital'])}")
 
@@ -246,7 +348,26 @@ def state_json():
         "win_rate": round(100 * wins / len(closed), 1) if closed else 0,
         "halted": STATE["halted"], "consec_losses": STATE["consec_losses"],
         "open": STATE["open"], "closed": closed[:50], "log": STATE["log"],
-        "sr": _get_sr(),
+        "sr": _get_sr(), "auto": STATE.get("auto", False),
+    }
+
+
+def account_state():
+    """Persisted account: rolling balance, withdrawals, and per-day history."""
+    acct = persistence.load()
+    daily = acct.get("daily", [])
+    total_pnl = round(sum(d.get("pnl", 0) for d in daily), 2)
+    total_wd = round(sum(w.get("amount", 0) for w in acct.get("withdrawals", [])), 2)
+    return {
+        "capital": round(acct.get("capital", 0), 2),
+        "initial": round(acct.get("initial", 0), 2),
+        "total_pnl": total_pnl,
+        "total_withdrawn": total_wd,
+        "days_traded": len(daily),
+        "daily": daily[:120],
+        "withdrawals": acct.get("withdrawals", [])[:120],
+        "trades": acct.get("trades", [])[:300],
+        "live": STATE["running"],
     }
 
 
