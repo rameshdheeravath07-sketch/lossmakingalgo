@@ -6,3 +6,4 @@ pydantic==2.7.1
 requests==2.32.3
 python-dotenv==1.0.1
 dhanhq==2.0.2
+tzdata==2024.1

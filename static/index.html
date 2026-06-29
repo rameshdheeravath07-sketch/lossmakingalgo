@@ -48,7 +48,7 @@
       <div class="row">
         <div><label>Security ID</label><input id="sec" value="13"></div>
         <div><label>Interval (min / D)</label><input id="itv" value="3"></div>
-        <div><label>Days back</label><input id="days" value="90"></div>
+        <div><label>Days back</label><input id="days" value="540"></div>
       </div>
       <div class="row">
         <div><label>Option delta</label><input id="delta" value="0.6"></div>
@@ -82,13 +82,20 @@
     <section class="card">
       <div class="grid4">
         <div class="stat"><div class="v" id="ppCapV">—</div><div class="k">Capital</div></div>
-        <div class="stat"><div class="v" id="ppPnl">—</div><div class="k">P&L</div></div>
-        <div class="stat"><div class="v" id="ppWin">—</div><div class="k">Win rate</div></div>
+        <div class="stat"><div class="v" id="ppPnl">—</div><div class="k">Realized P&L</div></div>
+        <div class="stat"><div class="v" id="ppUpnl">—</div><div class="k">Live Unrealized</div></div>
         <div class="stat"><div class="v" id="ppSpot">—</div><div class="k">NIFTY spot</div></div>
       </div>
+      <div class="grid3" style="margin-top:8px">
+        <div class="stat"><div class="v" id="ppTotal">—</div><div class="k">Total P&L (real+unreal)</div></div>
+        <div class="stat"><div class="v" id="ppWin">—</div><div class="k">Win rate</div></div>
+        <div class="stat"><div class="v" id="ppTime" style="font-size:14px">—</div><div class="k">Last update</div></div>
+      </div>
       <p style="font-size:12px;color:var(--mut);margin-top:8px" id="ppMeta"></p>
-      <h4 style="margin:14px 0 0">Open positions</h4>
-      <table id="ppOpen"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>Entry₹</th><th>Δ</th><th>Time</th></tr></thead><tbody></tbody></table>
+      <div id="ppSR" style="font-size:12px;margin:8px 0;padding:8px;background:#0d1117;border-radius:6px;border:1px solid var(--bd)"></div>
+      <div id="ppWarn" style="display:none;font-size:13px;font-weight:600;padding:8px 12px;border-radius:6px;background:#7c2d12;color:#fca5a5;margin-bottom:8px"></div>
+      <h4 style="margin:14px 0 0">Open positions <span style="font-size:12px;color:var(--mut)">(live premium updates every 20s)</span></h4>
+      <table id="ppOpen"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>Entry₹</th><th>Live₹</th><th>Prem%</th><th>Δ</th><th>Unreal P&L</th><th>Near S&R</th><th>Time</th></tr></thead><tbody></tbody></table>
       <h4 style="margin:16px 0 0">Closed trades</h4>
       <table id="ppClosed"><thead><tr><th>Type</th><th>Strike</th><th>Lots</th><th>In</th><th>Out</th><th>Why</th><th>P&L</th></tr></thead><tbody></tbody></table>
       <h4 style="margin:16px 0 0">Log</h4>
@@ -113,6 +120,8 @@
         <button style="background:var(--red)" onclick="rlStart()">▶ Start REAL Bot</button>
         <button style="background:#6e7681" onclick="rlStop()">⏹ KILL SWITCH (stop + square off)</button>
       </div>
+      <div id="rlFunds" style="margin-top:12px;padding:10px;background:#0d1117;border:1px solid var(--bd);border-radius:6px;font-size:13px">Loading balance…</div>
+      <button style="background:#0a7ea4" onclick="rlLoadFunds()">🔄 Refresh Dhan Balance</button>
     </section>
     <section class="card">
       <div class="grid4">
@@ -146,13 +155,13 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
-function show(t){['bt','pp','rl','st'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});if(t==='st')stLoad();}
+function show(t){['bt','pp','rl','st'].forEach(x=>{$(x).classList.toggle('hidden',x!==t);$('tab'+x[0].toUpperCase()+x[1]).classList.toggle('active',x===t);});if(t==='st')stLoad();if(t==='rl')rlLoadFunds();}
 async function post(u,b){return (await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();}
 // ---- backtest ----
 function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instrument_type:'INDEX',
   interval:$('itv').value,days:parseInt($('days').value),option_delta:parseFloat($('delta').value),capital:parseFloat($('cap').value)};}
 async function loadCfg(){const c=await(await fetch('/api/config')).json();
-  $('cfg').textContent=`VWAP ${c.vwap_points}pt · target ${c.target_pct}% · stop ${c.stop_pct}% · BE ${c.breakeven_pct}% · ₹${c.capital} · max ${c.max_trades_day}/day`;}
+  $('cfg').textContent=`VWAP ${c.vwap_points}pt · PREMIUM target +${c.premium_target}% / stop -${c.premium_stop}% / BE +${c.premium_be}% / trail ${c.premium_trail}% · ₹${c.capital} · max ${c.max_trades_day}/day`;}
 function renderBT(r){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
   const s=r.summary;let h='';if(r.candles)h+=`<p style="color:var(--mut);font-size:12px">${r.candles} candles · ${r.from} → ${r.to}</p>`;
   h+=`<div class="grid3"><div class="stat"><div class="v">${s.trades}</div><div class="k">Trades</div></div>
@@ -178,24 +187,17 @@ async function insp(){const b=body();b.at=$('at').value||null;b.window=6;const r
   const k=Object.keys(r.rows[0]);let h=`<p style="font-size:12px;color:var(--mut)">Around ${r.center}</p><table><thead><tr>`;k.forEach(x=>h+=`<th>${x}</th>`);h+='</tr></thead><tbody>';
   r.rows.forEach(row=>{h+='<tr>';k.forEach(x=>{let v=row[x];let cls=(x==='signal'&&(v==='BUY'||v==='SELL'))?'pos':'';h+=`<td class="${cls}">${v}</td>`;});h+='</tr>';});$('out').innerHTML=h+'</tbody></table>';}
 // ---- paper ----
-async function ppStart(){const r=await post('/api/paper/start',{capital:parseFloat($('ppCap').value),interval:$('ppItv').value,ignore_hours:$('ppIgnore').value.toLowerCase().startsWith('y')});if(r.result&&r.result!=='started'&&r.result!=='already running')alert(r.result);ppRefresh();}
-async function ppStop(){await post('/api/paper/stop',{});ppRefresh();}
-async function ppRefresh(){const s=await(await fetch('/api/paper/state')).json();
-  const p=$('ppPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
-  $('ppCapV').textContent='₹'+(s.capital??0);
-  $('ppPnl').innerHTML=`<span class="${s.pnl>=0?'pos':'neg'}">₹${s.pnl??0}</span>`;
-  $('ppWin').textContent=(s.win_rate??0)+'%';
-  $('ppSpot').textContent=s.spot??'—';
-  $('ppMeta').textContent=`Expiry ${s.expiry||'—'} · trades today ${s.trades_today||0} · closed ${s.closed_count||0} · start ₹${s.start_capital||0}`;
-  let o='';(s.open||[]).forEach(p=>o+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.delta}</td><td>${p.entry_time}</td></tr>`);
-  $('ppOpen').querySelector('tbody').innerHTML=o;
-  let c='';(s.closed||[]).forEach(p=>c+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.exit_ltp}</td><td style="color:var(--mut)">${p.exit_reason}</td><td class="${p.pnl>=0?'pos':'neg'}">₹${p.pnl}</td></tr>`);
-  $('ppClosed').querySelector('tbody').innerHTML=c;
-  $('ppLog').textContent=(s.log||[]).map(l=>`${l.time}  ${l.msg}`).join('\n');}
+async function ppStart(){const r=await post('/api/paper/start',{capital:parseFloat($('ppCap').value),interval:$('ppItv').value,ignore_hours:$('ppIgnore').value.toLowerCase().startsWith('y')});if(r.result&&r.result!=='started'&&r.result!=='already running')alert(r.result);}
+async function ppStop(){await post('/api/paper/stop',{});}
 // ---- real ----
 async function rlArmBtn(){const r=await post('/api/real/arm',{phrase:$('rlArm').value});alert(r.armed?'ARMED — orders enabled':'Arm failed: type the exact phrase');rlRefresh();}
 async function rlStart(){if(!confirm('Start REAL money trading? Live orders will be placed.'))return;const r=await post('/api/real/start',{lots:parseInt($('rlLots').value),interval:$('rlItv').value});if(r.result!=='started')alert(r.result);rlRefresh();}
 async function rlStop(){await post('/api/real/stop',{});rlRefresh();}
+async function rlLoadFunds(){const f=await(await fetch('/api/real/funds')).json();
+  if(f.error){$('rlFunds').innerHTML='<span class="neg">Balance error: '+f.error+'</span>';return;}
+  const lotCost=15000; const canTrade=f.available>=lotCost;
+  $('rlFunds').innerHTML=`💰 <b>Available: ₹${f.available}</b> · Utilized ₹${f.utilized} · Withdrawable ₹${(f.sod_limit||0)}<br>`+
+    `<span class="${canTrade?'pos':'neg'}">${canTrade?'✓ Enough for ~1 lot':'⚠ Balance too low for 1 NIFTY lot (~₹15-22k needed)'}</span>`;}
 async function rlRefresh(){const s=await(await fetch('/api/real/state')).json();
   const p=$('rlPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
   $('rlRealized').innerHTML=`<span class="${s.realized>=0?'pos':'neg'}">₹${s.realized??0}</span>`;
@@ -216,7 +218,41 @@ async function stSave(){const r=await post('/api/settings',{client_id:$('stCid')
   if(r.saved){$('stTok').value='';$('stStatus').innerHTML='<span class="pos">Saved ✓</span>';stLoad();}}
 async function stTest(){$('stStatus').textContent='Testing…';const r=await post('/api/settings/test',{});
   $('stStatus').innerHTML=`<span class="${r.ok?'pos':'neg'}">${r.msg}</span>`;}
-loadCfg();ppRefresh();rlRefresh();setInterval(()=>{ppRefresh();rlRefresh();},5000);
+// SSE — server pushes paper state every 2s, no polling, no page refresh
+function startSSE(){
+  const es=new EventSource('/api/paper/stream');
+  es.onmessage=e=>{try{updatePP(JSON.parse(e.data));}catch(_){}};
+  es.onerror=()=>{es.close();setTimeout(startSSE,3000);}; // auto-reconnect
+}
+function updatePP(s){
+  const p=$('ppPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
+  $('ppCapV').textContent='₹'+(s.capital??0);
+  $('ppPnl').innerHTML=`<span class="${(s.pnl??0)>=0?'pos':'neg'}">₹${s.pnl??0}</span>`;
+  $('ppUpnl').innerHTML=`<span class="${(s.unrealized??0)>=0?'pos':'neg'}">₹${s.unrealized??0}</span>`;
+  $('ppTotal').innerHTML=`<span class="${(s.total_pnl??0)>=0?'pos':'neg'}" style="font-size:18px;font-weight:700">₹${s.total_pnl??0}</span>`;
+  $('ppWin').textContent=(s.win_rate??0)+'%';
+  $('ppSpot').textContent=s.spot??'—';
+  $('ppTime').textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  $('ppMeta').textContent=`Expiry ${s.expiry||'—'} · trades today ${s.trades_today||0} · closed ${s.closed_count||0} · start ₹${s.start_capital||0}`;
+  const sr=s.sr||{};
+  const trend=sr.regime==='TRENDING';
+  const modeTxt=trend?'TREND mode (breakout)':'RANGE mode (buy support / sell resistance)';
+  const regimeBadge=`<span style="padding:2px 10px;border-radius:12px;font-weight:700;background:${trend?'#065f46':'#1e3a5f'};color:${trend?'#6ee7b7':'#93c5fd'}">${sr.regime||'—'} · ${modeTxt} · ADX ${sr.adx??'—'}</span>`;
+  $('ppSR').innerHTML=`${regimeBadge} &nbsp; <span style="color:var(--red)">⛔ R: ${(sr.resistances||[]).join('  ')}</span> &nbsp; <span style="color:var(--green)">🟢 S: ${(sr.supports||[]).join('  ')}</span>`;
+  const w=$('ppWarn');
+  if(s.halted){w.style.display='block';w.style.background='#7f1d1d';w.textContent=`🛑 HALTED for the day — ${s.consec_losses} losses in a row. Bad day, bot stopped to protect capital.`;}
+  else if((sr.warnings||[]).length){w.style.display='block';w.style.background='#7c2d12';w.textContent='⚠ REVERSAL WARNING: '+(sr.warnings||[]).join(' | ');}
+  else w.style.display='none';
+  let o='';(s.open||[]).forEach(p=>{
+    const upnl=p.upnl??0;const cur=p.cur_ltp??p.entry_ltp;const sr=p.near_sr||'—';const pp=p.prem_pct??0;
+    o+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>₹${p.entry_ltp}</td><td><b class="${cur>p.entry_ltp?'pos':'neg'}">₹${cur}</b></td><td class="${pp>=0?'pos':'neg'}"><b>${pp>=0?'+':''}${pp}%</b></td><td>${p.delta}</td><td class="${upnl>=0?'pos':'neg'}"><b>₹${upnl}</b></td><td style="${sr!=='—'?'color:#f97316;font-weight:700':''}">${sr}</td><td>${p.entry_time}</td></tr>`;
+  });
+  $('ppOpen').querySelector('tbody').innerHTML=o||'<tr><td colspan="8" style="color:var(--mut)">No open positions</td></tr>';
+  let c='';(s.closed||[]).forEach(p=>c+=`<tr><td>${p.opt_type}</td><td>${p.strike}</td><td>${p.lots}</td><td>${p.entry_ltp}</td><td>${p.exit_ltp}</td><td style="color:var(--mut)">${p.exit_reason}</td><td class="${p.pnl>=0?'pos':'neg'}">₹${p.pnl}</td></tr>`);
+  $('ppClosed').querySelector('tbody').innerHTML=c;
+  $('ppLog').textContent=(s.log||[]).map(l=>`${l.time}  ${l.msg}`).join('\n');
+}
+loadCfg();rlRefresh();startSSE();setInterval(rlRefresh,5000);
 </script>
 </body>
 </html>

@@ -1,8 +1,17 @@
 """Configuration for the VWAP-cross intraday options backtester."""
 import os
+from datetime import time as _dtime
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _parse_time(s, default):
+    try:
+        h, m = str(s).split(":")
+        return _dtime(int(h), int(m))
+    except Exception:
+        return default
 
 
 def _bool(v, default=False):
@@ -31,13 +40,36 @@ class Config:
     MAX_LOTS = int(os.getenv("MAX_LOTS", 1))                 # hard cap on lots per trade
 
     # ---- VWAP-cross strategy (the validated one) ----
-    VWAP_CROSS_POINTS = float(os.getenv("VWAP_CROSS_POINTS", 80))   # both 9 & 15 EMA this far from VWAP
+    VWAP_CROSS_POINTS = float(os.getenv("VWAP_CROSS_POINTS", 80))   # symmetric value used by sweeps
+    VWAP_POINTS_EMA9 = float(os.getenv("VWAP_POINTS_EMA9", 60))     # 9 EMA distance from VWAP
+    VWAP_POINTS_EMA15 = float(os.getenv("VWAP_POINTS_EMA15", 50))   # 15 EMA distance from VWAP
+    # STATE = enter whenever condition true (more trades) | TRANSITION = only on the flip (selective)
+    ENTRY_MODE = os.getenv("ENTRY_MODE", "TRANSITION")   # selective = real edge (OOS PF 1.89)
     PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", 0.5))  # index % move target
     HARD_STOP_PCT = float(os.getenv("HARD_STOP_PCT", 0.7))          # index % move stop
-    BREAKEVEN_TRIGGER_PCT = float(os.getenv("BREAKEVEN_TRIGGER_PCT", 0.25))  # arm break-even after this
+    BREAKEVEN_TRIGGER_PCT = float(os.getenv("BREAKEVEN_TRIGGER_PCT", 0.25))
+    # ---- PREMIUM-based exits (live paper/real use the REAL option premium) ----
+    USE_PREMIUM_EXITS = _bool(os.getenv("USE_PREMIUM_EXITS"), True)
+    PREMIUM_TARGET_PCT = float(os.getenv("PREMIUM_TARGET_PCT", 30))   # sell when premium +30%
+    PREMIUM_STOP_PCT = float(os.getenv("PREMIUM_STOP_PCT", 20))       # exit when premium -20%
+    PREMIUM_BE_PCT = float(os.getenv("PREMIUM_BE_PCT", 12))           # arm break-even after +12%
+    PREMIUM_TRAIL_PCT = float(os.getenv("PREMIUM_TRAIL_PCT", 15))     # exit if premium falls this % from peak
+    PREMIUM_TRAIL_ARM = float(os.getenv("PREMIUM_TRAIL_ARM", 20))     # trailing starts once premium is +this%
+    USE_SR_EXIT = _bool(os.getenv("USE_SR_EXIT"), False)   # S&R exit cuts winners — OFF = let them run
+    SR_PROXIMITY_PCT = float(os.getenv("SR_PROXIMITY_PCT", 0.15))  # % price must be within S&R
+    SR_WINDOW = int(os.getenv("SR_WINDOW", 80))   # bars for RECENT swing S&R (not whole history)
+    # Only trade in a trending market — skip sideways/choppy (ADX based)
+    TRADE_ONLY_TRENDING = _bool(os.getenv("TRADE_ONLY_TRENDING"), True)
+    ADX_MIN = float(os.getenv("ADX_MIN", 20))     # below this = sideways, no new trades
+    # Circuit breaker: stop trading for the day after N losses in a row (bad day)
+    MAX_CONSEC_LOSSES = int(os.getenv("MAX_CONSEC_LOSSES", 2))  # arm break-even after this
 
     # Exits / session
     INTRADAY_ONLY = _bool(os.getenv("INTRADAY_ONLY"), True)         # square off same day
+    # No new entries before/after these IST times (skip volatile open + late session).
+    # 9:15 open VWAP is unreliable -> wait until 9:45. Stop new trades by 15:00.
+    NO_ENTRY_BEFORE = _parse_time(os.getenv("NO_ENTRY_BEFORE", "09:45"), _dtime(9, 45))
+    NO_ENTRY_AFTER = _parse_time(os.getenv("NO_ENTRY_AFTER", "15:00"), _dtime(15, 0))
     THETA_DECAY_PER_BAR = float(os.getenv("THETA_DECAY_PER_BAR", 0.05))
 
     # Daily circuit breakers (0 = off)

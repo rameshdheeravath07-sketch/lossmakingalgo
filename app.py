@@ -5,9 +5,10 @@ Run:  uvicorn app:app --reload
 Open: http://127.0.0.1:8000
 """
 from __future__ import annotations
-import io, os, re
+import io, os, re, json, asyncio
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -57,8 +58,9 @@ def _trades(res):
 @app.get("/api/config")
 def get_config():
     return {
-        "vwap_points": config.VWAP_CROSS_POINTS, "target_pct": config.PROFIT_TARGET_PCT,
-        "stop_pct": config.HARD_STOP_PCT, "breakeven_pct": config.BREAKEVEN_TRIGGER_PCT,
+        "vwap_points": f"{config.VWAP_POINTS_EMA9}/{config.VWAP_POINTS_EMA15}",
+        "premium_target": config.PREMIUM_TARGET_PCT, "premium_stop": config.PREMIUM_STOP_PCT,
+        "premium_be": config.PREMIUM_BE_PCT, "premium_trail": config.PREMIUM_TRAIL_PCT,
         "capital": config.CAPITAL_PER_TRADE, "max_trades_day": config.MAX_TRADES_PER_DAY,
         "square_off": config.INTRADAY_ONLY,
     }
@@ -139,6 +141,18 @@ def paper_state():
     return paper_trader.state_json()
 
 
+@app.get("/api/paper/stream")
+async def paper_stream():
+    """SSE stream — pushes paper state to browser every 2s, no page refresh."""
+    async def gen():
+        while True:
+            data = json.dumps(paper_trader.state_json())
+            yield f"data: {data}\n\n"
+            await asyncio.sleep(1)
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ---- REAL trading (guarded) ----
 class ArmReq(BaseModel):
     phrase: str = ""
@@ -166,6 +180,15 @@ def real_stop():
 @app.get("/api/real/state")
 def real_state():
     return real_trader.state_json()
+
+
+@app.get("/api/real/funds")
+def real_funds():
+    try:
+        f = client.get_funds()
+        return {k: v for k, v in f.items() if k != "raw"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ---- Settings: manage Dhan token from the UI ----

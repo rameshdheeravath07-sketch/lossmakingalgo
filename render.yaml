@@ -1,0 +1,65 @@
+# Render Blueprint — deploy the SMC VWAP-cross options dashboard.
+# In Render: New + > Blueprint > connect this repo. It reads this file.
+# The two DHAN_* secrets are NOT in git; set them in the Render dashboard
+# (Environment tab) after the first deploy. Everything else (the validated
+# strategy config) is baked in here so the deployed bot matches the backtest.
+services:
+  - type: web
+    name: smc-trader
+    runtime: python
+    plan: free                      # free = sleeps after 15 min idle (see README)
+    region: singapore               # closest Render region to Dhan (India)
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/config
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: TZ
+        value: Asia/Kolkata
+      # ---- secrets: set these manually in the Render dashboard ----
+      - key: DHAN_CLIENT_ID
+        sync: false
+      - key: DHAN_ACCESS_TOKEN
+        sync: false
+      # ---- validated / frozen strategy config (safe to be public) ----
+      - key: CAPITAL_PER_TRADE
+        value: "15000"
+      - key: MAX_TRADES_PER_DAY
+        value: "6"
+      - key: VWAP_POINTS_EMA9
+        value: "50"
+      - key: VWAP_POINTS_EMA15
+        value: "40"
+      - key: ENTRY_MODE
+        value: TRANSITION
+      - key: TRADE_ONLY_TRENDING
+        value: "true"
+      - key: PREMIUM_TARGET_PCT
+        value: "0"
+      - key: PREMIUM_STOP_PCT
+        value: "17"
+      - key: PREMIUM_BE_PCT
+        value: "12"
+      - key: PREMIUM_TRAIL_PCT
+        value: "5"
+      - key: PREMIUM_TRAIL_ARM
+        value: "10"
+      - key: USE_SR_EXIT
+        value: "false"
+      - key: USE_PREMIUM_EXITS
+        value: "true"
+      - key: ADX_MIN
+        value: "20"
+      - key: MAX_CONSEC_LOSSES
+        value: "2"
+      - key: INTRADAY_ONLY
+        value: "true"
+      - key: NO_ENTRY_BEFORE
+        value: "09:45"
+      - key: NO_ENTRY_AFTER
+        value: "15:00"
+      - key: SLIPPAGE_PCT
+        value: "0.1"
+      - key: LIVE_TRADING
+        value: "false"             # keep paper-only until proven

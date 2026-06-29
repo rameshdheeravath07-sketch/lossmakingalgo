@@ -38,10 +38,10 @@ def get_signals(df: pd.DataFrame, **_) -> pd.DataFrame:
     out["ema9"] = ema(out["close"], 9)
     out["ema15"] = ema(out["close"], 15)
     out["vwap"] = session_vwap(out)
-    thr = config.VWAP_CROSS_POINTS
+    p9, p15 = config.VWAP_POINTS_EMA9, config.VWAP_POINTS_EMA15
 
-    both_above = (out["ema9"] >= out["vwap"] + thr) & (out["ema15"] >= out["vwap"] + thr)
-    both_below = (out["ema9"] <= out["vwap"] - thr) & (out["ema15"] <= out["vwap"] - thr)
+    both_above = (out["ema9"] >= out["vwap"] + p9) & (out["ema15"] >= out["vwap"] + p15)
+    both_below = (out["ema9"] <= out["vwap"] - p9) & (out["ema15"] <= out["vwap"] - p15)
 
     buy = both_above & ~both_above.shift(1, fill_value=False)
     sell = both_below & ~both_below.shift(1, fill_value=False)
@@ -50,4 +50,9 @@ def get_signals(df: pd.DataFrame, **_) -> pd.DataFrame:
     signal[buy] = "BUY"
     signal[sell] = "SELL"
     out["signal"] = signal
+    # persistent state (catch trend mid-move) + transition (selective: only the flip)
+    out["both_above"] = both_above
+    out["both_below"] = both_below
+    out["above_new"] = both_above & ~both_above.shift(1, fill_value=False)
+    out["below_new"] = both_below & ~both_below.shift(1, fill_value=False)
     return out

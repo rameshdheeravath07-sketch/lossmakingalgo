@@ -19,6 +19,8 @@ except Exception:
 from config import config
 from dhan_client import client
 from strategy import get_signals
+from reversal import adx_value
+import engine
 
 
 def _now_ist():
@@ -31,6 +33,7 @@ STATE = {
     "running": False, "armed": False, "open": [], "closed": [], "log": [],
     "expiry": None, "spot": None, "last_bar": None, "realized": 0.0,
     "trades_today": 0, "trade_day": None, "params": {},
+    "consec_losses": 0, "day_pnl": 0.0, "regime": None, "adx": 0,
 }
 _stop = threading.Event()
 _thread = None
@@ -70,6 +73,7 @@ def start(lots, interval="3"):
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True)
     _thread.start()
+    threading.Thread(target=_tick_loop, daemon=True).start()   # fast LTP + exits
     _log(f"LIVE START — {lots} lot(s), expiry {STATE['expiry']}  ⚠ REAL MONEY")
     return "started"
 
@@ -84,7 +88,7 @@ def stop():
     except Exception:
         chain, spot = None, STATE["spot"]
     for pos in list(STATE["open"]):
-        _exit(pos, spot, chain, "KILL_SWITCH")
+        _exit(pos, "KILL_SWITCH")
     _log("LIVE STOP + squared off all")
     return "stopped"
 
@@ -96,8 +100,31 @@ def _loop():
                 _cycle()
         except Exception as e:
             _log(f"loop error: {e}")
-        _stop.wait(60)
+        _stop.wait(10)
     STATE["running"] = False
+
+
+def _tick_loop():
+    """Fast loop — live LTP + FAST exits every 2s."""
+    while not _stop.is_set():
+        try:
+            secs = {"IDX_I": [config.UNDER_SCRIP]}
+            fno = [int(p["security_id"]) for p in STATE["open"] if p.get("security_id")]
+            if fno:
+                secs["NSE_FNO"] = fno
+            q = client.ltp_quote(secs)
+            sp = q.get("IDX_I", {}).get(str(config.UNDER_SCRIP))
+            if sp:
+                STATE["spot"] = sp
+            for p in STATE["open"]:
+                lt = q.get("NSE_FNO", {}).get(str(p.get("security_id")))
+                if lt:
+                    p["cur_ltp"] = lt
+                    p["upnl"] = round((lt - p["entry_ltp"]) * p["qty"], 2)
+            _monitor()
+        except Exception:
+            pass
+        _stop.wait(2)
 
 
 def _cycle():
@@ -114,26 +141,34 @@ def _cycle():
         STATE["spot"] = client.parse_chain(chain)[0]
     except Exception as e:
         _log(f"chain error: {e}")
-    spot = STATE["spot"] or float(last["close"])
-    _monitor(spot, chain)
+    STATE["spot"] = STATE["spot"] or float(last["close"])
+    STATE["_df"] = df
+    STATE["adx"] = adx_value(df)
     if bar_time != STATE["last_bar"]:
         STATE["last_bar"] = bar_time
-        if last["signal"] in ("BUY", "SELL"):
-            _on_signal(last["signal"], spot, chain)
+        side, mode, regime = engine.decide_entry(last, df, STATE["adx"])
+        STATE["regime"] = regime
+        if side:
+            _on_signal(side, STATE["spot"], chain, mode)
 
 
-def _on_signal(signal, spot, chain):
+def _on_signal(signal, spot, chain, mode="TREND"):
     want = "CE" if signal == "BUY" else "PE"
     for pos in list(STATE["open"]):
         if pos["opt_type"] != want:
-            _exit(pos, spot, chain, "OPPOSITE")
+            _exit(pos, "OPPOSITE")
     if any(p["opt_type"] == want for p in STATE["open"]) or chain is None:
         return
     today = _now_ist().date().isoformat()
     if STATE["trade_day"] != today:
         STATE["trade_day"] = today; STATE["trades_today"] = 0
-    if STATE["trades_today"] >= config.MAX_TRADES_PER_DAY:
-        return _log("daily trade limit reached")
+        STATE["consec_losses"] = 0; STATE["day_pnl"] = 0.0
+    ok_gate, gmsg = engine.entry_gate(STATE["_df"], signal, mode, _now_ist().time())
+    if not ok_gate:
+        return _log(gmsg)
+    ok_risk, rmsg = engine.can_trade(STATE["trades_today"], STATE["consec_losses"], STATE["day_pnl"])
+    if not ok_risk:
+        return _log(rmsg)
     try:
         opt = client.pick_itm(chain, signal, depth=config.ITM_DEPTH)
         sid = client.option_security_id(SYMBOL, STATE["expiry"], opt["strike"], opt["type"])
@@ -156,37 +191,32 @@ def _on_signal(signal, spot, chain):
          f"@~{opt['ltp']} (order {ok})")
 
 
-def _monitor(spot, chain):
-    if spot is None:
-        return
+def _monitor():
     eod = _now_ist().time() >= dtime(15, 15)
+    df = STATE.get("_df")
     for pos in list(STATE["open"]):
-        fav = (spot - pos["entry_spot"]) if pos["opt_type"] == "CE" else (pos["entry_spot"] - spot)
-        fav_pct = fav / pos["entry_spot"] * 100
-        pos["peak_fav"] = max(pos["peak_fav"], fav_pct)
-        reason = None
-        if eod:
-            reason = "EOD_SQUAREOFF"
-        elif fav_pct >= config.PROFIT_TARGET_PCT:
-            reason = "TARGET"
-        elif -fav_pct >= config.HARD_STOP_PCT:
-            reason = "HARD_STOP"
-        elif config.BREAKEVEN_TRIGGER_PCT > 0 and pos["peak_fav"] >= config.BREAKEVEN_TRIGGER_PCT and fav_pct <= 0:
-            reason = "BREAKEVEN"
-        if reason:
-            _exit(pos, spot, chain, reason)
+        prem = pos.get("cur_ltp") or pos["entry_ltp"]
+        prem_pct = (prem - pos["entry_ltp"]) / pos["entry_ltp"] * 100
+        pos["prem_pct"] = round(prem_pct, 1)
+        pos["peak_prem"] = max(pos.get("peak_prem", 0.0), prem_pct)
+        should_exit, reason = engine.decide_exit(
+            df, pos["opt_type"], pos["entry_ltp"], prem, pos["peak_prem"], eod)
+        if should_exit:
+            _exit(pos, reason)
 
 
-def _exit(pos, spot, chain, reason):
+def _exit(pos, reason):
     if STATE["armed"] and config.LIVE_TRADING:
         order = client.place_order(pos["security_id"], pos["qty"], "SELL")
     else:
         order = {"status": "not-armed"}
-    ltp = client.option_ltp(chain, pos["strike"], pos["opt_type"]) if chain else pos["entry_ltp"]
+    ltp = pos.get("cur_ltp") or pos["entry_ltp"]
     if ltp <= 0:
         ltp = pos["entry_ltp"]
     pnl = (ltp - pos["entry_ltp"]) * pos["qty"]
     STATE["realized"] += pnl
+    STATE["day_pnl"] += pnl
+    STATE["consec_losses"] = STATE["consec_losses"] + 1 if pnl < 0 else 0
     pos.update(exit_ltp=ltp, exit_reason=reason, pnl=round(pnl, 2),
                exit_time=_now_ist().strftime("%H:%M:%S"), exit_order=order)
     STATE["open"].remove(pos)

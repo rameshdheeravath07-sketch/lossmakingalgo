@@ -65,59 +65,12 @@ class DhanClient:
             df.index = pd.to_datetime(data["timestamp"], unit="s")
         return df
 
-    def historical_candles(self, security_id: str, exchange_segment: str,
-                           instrument_type: str = "INDEX", interval: str = "5",
-                           from_date: str = None, to_date: str = None,
-                           days: int = 90) -> pd.DataFrame:
-        """
-        Historical OHLCV for backtesting. interval 'D' = daily, else minutes
-        ('1','5','15','25','60'). Dhan caps intraday history (~90 days), daily
-        goes back years. Returns DataFrame indexed by datetime.
-        """
-        to_d = to_date or str(dt.date.today())
-        from_d = from_date or str(dt.date.today() - dt.timedelta(days=days))
+    # Dhan caps each intraday request at ~90 days; chunk longer ranges.
+    INTRADAY_CHUNK_DAYS = 90
 
-        interval = str(interval).strip().upper()
-        ALLOWED = {"1", "5", "15", "25", "60"}
-        resample_to = None        # minutes to resample to, if not natively supported
-        if interval != "D":
-            alias = {"1D": "D", "DAY": "D", "DAILY": "D"}
-            interval = alias.get(interval, interval)
-            if interval != "D" and interval not in ALLOWED:
-                # custom interval (e.g. 3, 10, 30) -> fetch 1-min and resample
-                try:
-                    resample_to = int(interval)
-                    interval = "1"
-                except ValueError:
-                    raise ValueError(
-                        f"Invalid interval '{interval}'. Use a number of minutes "
-                        f"or 'D' (daily).")
-
-        # Call Dhan REST directly (library versions disagree on the interval field)
-        headers = {
-            "access-token": config.DHAN_ACCESS_TOKEN,
-            "client-id": config.DHAN_CLIENT_ID,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        if interval == "D":
-            url = f"{DHAN_API}/charts/historical"
-            payload = {
-                "securityId": str(security_id),
-                "exchangeSegment": exchange_segment,
-                "instrument": instrument_type,
-                "fromDate": from_d, "toDate": to_d,
-            }
-        else:
-            url = f"{DHAN_API}/charts/intraday"
-            payload = {
-                "securityId": str(security_id),
-                "exchangeSegment": exchange_segment,
-                "instrument": instrument_type,
-                "interval": interval,
-                "fromDate": from_d, "toDate": to_d,
-            }
-        r = requests.post(url, json=payload, headers=headers, timeout=30)
+    def _fetch_window(self, url, payload) -> pd.DataFrame:
+        """Single Dhan charts request -> raw OHLCV DataFrame (no resample)."""
+        r = requests.post(url, json=payload, headers=self._headers(), timeout=60)
         try:
             data = r.json()
         except Exception:
@@ -134,6 +87,67 @@ class DhanClient:
         ts = data.get("timestamp") or data.get("start_Time")
         if ts is not None:
             df.index = pd.to_datetime(ts, unit="s")
+        return df
+
+    def historical_candles(self, security_id: str, exchange_segment: str,
+                           instrument_type: str = "INDEX", interval: str = "5",
+                           from_date: str = None, to_date: str = None,
+                           days: int = 90) -> pd.DataFrame:
+        """
+        Historical OHLCV for backtesting. interval 'D' = daily, else minutes
+        ('1','5','15','25','60'). Daily goes back years in one shot; intraday is
+        capped per request (~90 days) by Dhan, so longer ranges (e.g. 1.5 years)
+        are fetched in 90-day chunks and stitched together. Returns DataFrame
+        indexed by datetime.
+        """
+        to_d = dt.date.fromisoformat(to_date) if to_date else dt.date.today()
+        from_d = (dt.date.fromisoformat(from_date) if from_date
+                  else to_d - dt.timedelta(days=days))
+
+        interval = str(interval).strip().upper()
+        ALLOWED = {"1", "5", "15", "25", "60"}
+        resample_to = None        # minutes to resample to, if not natively supported
+        alias = {"1D": "D", "DAY": "D", "DAILY": "D"}
+        interval = alias.get(interval, interval)
+        if interval != "D" and interval not in ALLOWED:
+            # custom interval (e.g. 3, 10, 30) -> fetch 1-min and resample
+            try:
+                resample_to = int(interval)
+                interval = "1"
+            except ValueError:
+                raise ValueError(
+                    f"Invalid interval '{interval}'. Use a number of minutes "
+                    f"or 'D' (daily).")
+
+        if interval == "D":
+            # daily history returns the whole range in one call
+            url = f"{DHAN_API}/charts/historical"
+            payload = {"securityId": str(security_id), "exchangeSegment": exchange_segment,
+                       "instrument": instrument_type,
+                       "fromDate": str(from_d), "toDate": str(to_d)}
+            df = self._fetch_window(url, payload)
+        else:
+            # intraday: walk the range in <=90-day chunks and concatenate
+            url = f"{DHAN_API}/charts/intraday"
+            parts = []
+            chunk = dt.timedelta(days=self.INTRADAY_CHUNK_DAYS)
+            start = from_d
+            while start <= to_d:
+                end = min(start + chunk, to_d)
+                payload = {"securityId": str(security_id), "exchangeSegment": exchange_segment,
+                           "instrument": instrument_type, "interval": interval,
+                           "fromDate": str(start), "toDate": str(end)}
+                try:
+                    part = self._fetch_window(url, payload)
+                    if len(part):
+                        parts.append(part)
+                except RuntimeError:
+                    pass  # skip empty/failed windows (e.g. holidays-only spans)
+                start = end + dt.timedelta(days=1)
+            if not parts:
+                raise RuntimeError("Dhan returned no intraday data for the range")
+            df = pd.concat(parts)
+            df = df[~df.index.duplicated(keep="first")].sort_index()
 
         if resample_to and resample_to > 1:
             df = (df.resample(f"{resample_to}min", label="left", closed="left")
@@ -207,6 +221,40 @@ class DhanClient:
         _, rows = self.parse_chain(chain)
         leg = rows.get(strike, {}).get(opt_type.lower())
         return leg["ltp"] if leg else 0.0
+
+    def get_funds(self) -> dict:
+        """Fetch Dhan account fund limit / available balance."""
+        r = requests.get(f"{DHAN_API}/fundlimit", headers=self._headers(), timeout=15)
+        d = r.json()
+        if isinstance(d, dict) and d.get("status") == "failure":
+            raise RuntimeError(d.get("remarks", d))
+        return {
+            "available": float(d.get("availabelBalance") or d.get("availableBalance") or 0),
+            "sod_limit": float(d.get("sodLimit") or 0),
+            "utilized": float(d.get("utilizedAmount") or 0),
+            "collateral": float(d.get("collateralAmount") or 0),
+            "raw": d,
+        }
+
+    def get_positions(self) -> list:
+        """Fetch current open positions from Dhan."""
+        r = requests.get(f"{DHAN_API}/positions", headers=self._headers(), timeout=15)
+        d = r.json()
+        return d.get("data", d) if isinstance(d, dict) else d
+
+    def ltp_quote(self, securities: dict) -> dict:
+        """Fast LTP for a list of securities (lighter than option chain).
+        securities = {"IDX_I":[13], "NSE_FNO":[sid,...]} -> {seg:{sid:ltp}}."""
+        body = {seg: [int(x) for x in ids] for seg, ids in securities.items() if ids}
+        r = requests.post(f"{DHAN_API}/marketfeed/ltp", headers=self._headers(),
+                          json=body, timeout=10)
+        data = r.json()
+        if data.get("status") == "failure":
+            raise RuntimeError(data.get("remarks", data))
+        out = {}
+        for seg, d in (data.get("data", {}) or {}).items():
+            out[seg] = {k: float(v.get("last_price") or 0) for k, v in d.items()}
+        return out
 
     # ------------------------------------------------------------------
     # scrip master (maps strike -> security_id, needed for REAL orders)

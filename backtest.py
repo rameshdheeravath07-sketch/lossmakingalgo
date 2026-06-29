@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from strategy import get_signals
+from reversal import adx_series
 from config import config
+import engine
 
 
 @dataclass
@@ -46,9 +48,11 @@ class BacktestResult:
 
 
 def run_backtest(df: pd.DataFrame, option_delta: float = 0.6, capital: float = None) -> BacktestResult:
+    """Uses the SHARED engine — identical logic to paper + real trading."""
     capital = capital or config.CAPITAL_PER_TRADE
     decay = config.THETA_DECAY_PER_BAR
     sig = get_signals(df)
+    adx_col = adx_series(df)                      # precomputed (fast)
     result = BacktestResult()
     equity = 0.0
 
@@ -56,96 +60,92 @@ def run_backtest(df: pd.DataFrame, option_delta: float = 0.6, capital: float = N
     entry_spot = entry_prem = 0.0
     entry_ts = None
     bars_held = 0
-    be_armed = False
+    peak_pct = 0.0
 
     def premium(spot):
         move = (spot - entry_spot) * (1 if open_side == "LONG" else -1)
         return max(entry_prem + move * option_delta - decay * bars_held, 0.05)
 
     def close(ts, prem, reason):
-        nonlocal equity, day_pnl
+        nonlocal equity, day_pnl, consec_losses
         ret = max((prem - entry_prem) / entry_prem, -1.0)
         pnl = ret * capital
-        # realistic Indian F&O options charges on premium turnover
         buy_val, sell_val = capital, capital * (1 + ret)
-        brokerage = 40
-        stt = 0.001 * sell_val
-        txn = 0.0003503 * (buy_val + sell_val)
-        stamp = 0.00003 * buy_val
-        gst = 0.18 * (brokerage + txn)
-        slippage = 2 * (config.SLIPPAGE_PCT / 100) * capital
-        pnl -= (brokerage + stt + txn + stamp + gst + slippage)
+        charges = 40 + 0.001 * sell_val + 0.0003503 * (buy_val + sell_val) + 0.00003 * buy_val \
+            + 0.18 * (40 + 0.0003503 * (buy_val + sell_val)) + 2 * (config.SLIPPAGE_PCT / 100) * capital
+        pnl -= charges
         equity += pnl
         day_pnl += pnl
+        consec_losses = consec_losses + 1 if pnl < 0 else 0
         result.trades.append(Trade(entry_ts, open_side, round(entry_spot, 2),
                                    ts, round(spot_at_exit, 2), round(pnl, 2), reason))
 
     prev_day = None
-    trades_today = 0
+    trades_today = consec_losses = 0
     day_pnl = 0.0
     spot_at_exit = 0.0
-    for ts, row in sig.iterrows():
-        s = row["signal"]
+    n = len(sig)
+    for i in range(n):
+        ts = sig.index[i]
+        row = sig.iloc[i]
         c, hi, lo = row["close"], row["high"], row["low"]
         cur_day = ts.date() if hasattr(ts, "date") else None
+        dslice = df.iloc[max(0, i - config.SR_WINDOW):i + 1]   # recent window for S&R
 
         if cur_day != prev_day:
-            trades_today = 0
-            day_pnl = 0.0
+            trades_today = 0; day_pnl = 0.0; consec_losses = 0
             if config.INTRADAY_ONLY and open_side is not None and prev_day is not None:
                 spot_at_exit = prev_close
                 close(prev_ts, premium(prev_close), "EOD_SQUAREOFF")
                 open_side = None
         prev_day, prev_close, prev_ts = cur_day, c, ts
 
+        # ---- EXITS (shared engine; intrabar stop overlay for risk realism) ----
         if open_side is not None:
             bars_held += 1
+            opt_type = "CE" if open_side == "LONG" else "PE"
             fav_spot = hi if open_side == "LONG" else lo
             adv_spot = lo if open_side == "LONG" else hi
+            prem_fav, prem_adv, prem_close = premium(fav_spot), premium(adv_spot), premium(c)
+            peak_pct = max(peak_pct, (prem_fav - entry_prem) / entry_prem * 100)
             exit_prem = exit_reason = None
-
-            # profit target
-            fav_move = (fav_spot - entry_spot) if open_side == "LONG" else (entry_spot - fav_spot)
-            if config.PROFIT_TARGET_PCT > 0 and fav_move / entry_spot * 100 >= config.PROFIT_TARGET_PCT:
-                tgt = entry_spot * (1 + config.PROFIT_TARGET_PCT / 100) if open_side == "LONG" \
-                    else entry_spot * (1 - config.PROFIT_TARGET_PCT / 100)
-                exit_prem, exit_reason, spot_at_exit = premium(tgt), "TARGET", tgt
-
-            # break-even stop
-            if exit_prem is None and config.BREAKEVEN_TRIGGER_PCT > 0:
-                if fav_move / entry_spot * 100 >= config.BREAKEVEN_TRIGGER_PCT:
-                    be_armed = True
-                back = (adv_spot <= entry_spot) if open_side == "LONG" else (adv_spot >= entry_spot)
-                if be_armed and back:
-                    exit_prem, exit_reason, spot_at_exit = premium(entry_spot), "BREAKEVEN", entry_spot
-
-            # hard stop
-            if exit_prem is None and config.HARD_STOP_PCT > 0:
-                adv_move = (entry_spot - adv_spot) if open_side == "LONG" else (adv_spot - entry_spot)
-                if adv_move / entry_spot * 100 >= config.HARD_STOP_PCT:
-                    exit_prem, exit_reason, spot_at_exit = premium(adv_spot), "HARD_STOP", adv_spot
-
+            stop_prem = entry_prem * (1 - config.PREMIUM_STOP_PCT / 100)
+            if config.USE_PREMIUM_EXITS and prem_adv <= stop_prem:
+                exit_prem, exit_reason, spot_at_exit = stop_prem, f"STOP (premium -{config.PREMIUM_STOP_PCT}%)", adv_spot
+            else:
+                ex, reason = engine.decide_exit(dslice, opt_type, entry_prem, prem_close, peak_pct, eod=False)
+                if ex:
+                    # target uses the bar's best premium; everything else uses close
+                    if reason.startswith("TARGET"):
+                        exit_prem, spot_at_exit = max(prem_close, prem_fav), fav_spot
+                    else:
+                        exit_prem, spot_at_exit = prem_close, c
+                    exit_reason = reason
             if exit_prem is not None:
                 close(ts, exit_prem, exit_reason)
                 open_side = None
 
-        # entry / opposite-signal reverse
-        if s in ("BUY", "SELL"):
-            new_side = "LONG" if s == "BUY" else "SHORT"
+        # ---- ENTRY (shared engine: signal + regime + mean-reversion + gates) ----
+        adx = float(adx_col.iloc[i])
+        side, mode, regime = engine.decide_entry(row, dslice, adx)
+        if side:
+            new_side = "LONG" if side == "BUY" else "SHORT"
             if open_side is not None and open_side != new_side:
                 spot_at_exit = c
                 close(ts, premium(c), "OPPOSITE")
                 open_side = None
-            tgt_hit = config.DAILY_PROFIT_TARGET > 0 and day_pnl >= config.DAILY_PROFIT_TARGET
-            loss_hit = config.DAILY_MAX_LOSS > 0 and day_pnl <= -config.DAILY_MAX_LOSS
-            if open_side is None and trades_today < config.MAX_TRADES_PER_DAY and not tgt_hit and not loss_hit:
-                open_side = new_side
-                entry_spot = c
-                entry_prem = max(c * 2.0 / 100, 1)   # assume entry premium ~2% of spot
-                entry_ts = ts
-                bars_held = 0
-                be_armed = False
-                trades_today += 1
+            if open_side is None:
+                ist_t = (ts + pd.Timedelta(hours=5, minutes=30)).time()
+                ok_gate, _ = engine.entry_gate(dslice, side, mode, ist_t)
+                ok_risk, _ = engine.can_trade(trades_today, consec_losses, day_pnl)
+                if ok_gate and ok_risk:
+                    open_side = new_side
+                    entry_spot = c
+                    entry_prem = max(c * 2.0 / 100, 1)
+                    peak_pct = 0.0
+                    entry_ts = ts
+                    bars_held = 0
+                    trades_today += 1
 
         result.equity_curve.append({"time": str(ts), "equity": round(equity, 2)})
 
@@ -155,16 +155,21 @@ def run_backtest(df: pd.DataFrame, option_delta: float = 0.6, capital: float = N
     return result
 
 
+def _set_vwap(v):
+    config.VWAP_POINTS_EMA9 = v
+    config.VWAP_POINTS_EMA15 = v
+
+
 def sweep_vwap_threshold(df, thresholds=(20, 30, 40, 50, 60, 80, 100, 120, 150),
                          capital=None, option_delta=0.6):
     rows = []
-    orig = config.VWAP_CROSS_POINTS
+    orig = (config.VWAP_POINTS_EMA9, config.VWAP_POINTS_EMA15)
     try:
         for thr in thresholds:
-            config.VWAP_CROSS_POINTS = thr
+            _set_vwap(thr)
             rows.append({"threshold": thr, **run_backtest(df, option_delta, capital).summary()})
     finally:
-        config.VWAP_CROSS_POINTS = orig
+        config.VWAP_POINTS_EMA9, config.VWAP_POINTS_EMA15 = orig
     rows.sort(key=lambda r: r["net_pnl"], reverse=True)
     return rows
 
@@ -186,12 +191,12 @@ def walk_forward(df, train_frac=0.6, thresholds=(40, 50, 60, 80, 100), capital=N
     cut = int(len(df) * train_frac)
     train, test = df.iloc[:cut], df.iloc[cut:]
     best = sweep_vwap_threshold(train, thresholds, capital, option_delta)[0]
-    orig = config.VWAP_CROSS_POINTS
+    orig = (config.VWAP_POINTS_EMA9, config.VWAP_POINTS_EMA15)
     try:
-        config.VWAP_CROSS_POINTS = best["threshold"]
+        _set_vwap(best["threshold"])
         test_res = run_backtest(test, option_delta, capital).summary()
     finally:
-        config.VWAP_CROSS_POINTS = orig
+        config.VWAP_POINTS_EMA9, config.VWAP_POINTS_EMA15 = orig
     return {
         "train_best_threshold": best["threshold"],
         "train_summary": {k: best[k] for k in ("trades", "win_rate", "profit_factor", "net_pnl")},

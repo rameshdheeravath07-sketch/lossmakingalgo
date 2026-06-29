@@ -20,6 +20,8 @@ except Exception:
 from config import config
 from dhan_client import client
 from strategy import get_signals
+from reversal import adx_value
+import engine
 
 
 def _now_ist():
@@ -29,6 +31,7 @@ STATE = {
     "running": False, "capital": 0.0, "start_capital": 0.0, "spot": None,
     "expiry": None, "open": [], "closed": [], "log": [],
     "last_bar": None, "trades_today": 0, "trade_day": None, "params": {},
+    "consec_losses": 0, "halted": False, "day_pnl": 0.0, "regime": None, "adx": 0,
 }
 _stop = threading.Event()
 _thread = None
@@ -51,6 +54,9 @@ def _check_day():
     if STATE["trade_day"] != today:
         STATE["trade_day"] = today
         STATE["trades_today"] = 0
+        STATE["consec_losses"] = 0
+        STATE["halted"] = False
+        STATE["day_pnl"] = 0.0
 
 
 def start(capital, interval="3", ignore_hours=False):
@@ -68,6 +74,7 @@ def start(capital, interval="3", ignore_hours=False):
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True)
     _thread.start()
+    threading.Thread(target=_tick_loop, daemon=True).start()   # fast live ticking
     _log(f"PAPER START — capital Rs.{capital}, expiry {STATE['expiry']}")
     return "started"
 
@@ -86,8 +93,32 @@ def _loop():
                 _cycle()
         except Exception as e:
             _log(f"loop error: {e}")
-        _stop.wait(60)          # 60s cycle (respects option-chain 1/3s limit)
+        _stop.wait(10)          # 10s strategy cycle (entries on new candle; exits run on 2s tick)
     STATE["running"] = False
+
+
+def _tick_loop():
+    """Fast loop — live ticking spot + open-position LTP every 2s (display)."""
+    while not _stop.is_set():
+        try:
+            secs = {"IDX_I": [config.UNDER_SCRIP]}
+            fno = [int(p["security_id"]) for p in STATE["open"] if p.get("security_id")]
+            if fno:
+                secs["NSE_FNO"] = fno
+            q = client.ltp_quote(secs)
+            sp = q.get("IDX_I", {}).get(str(config.UNDER_SCRIP))
+            if sp:
+                STATE["spot"] = sp
+            for p in STATE["open"]:
+                if p.get("security_id"):
+                    lt = q.get("NSE_FNO", {}).get(str(p["security_id"]))
+                    if lt:
+                        p["cur_ltp"] = lt
+                        p["upnl"] = round((lt - p["entry_ltp"]) * p["qty"], 2)
+            _monitor()      # FAST exits — target/stop/breakeven/S&R checked every 2s
+        except Exception:
+            pass
+        _stop.wait(2)
 
 
 def _cycle():
@@ -109,24 +140,34 @@ def _cycle():
     except Exception as e:
         _log(f"chain error: {e}")
 
-    _monitor(STATE["spot"], chain)
+    # cache candles for the fast exit loop
+    STATE["_df"] = df
+    STATE["adx"] = adx_value(df)
+    # NOTE: exits are handled in the fast 2s tick loop for speed
 
     if bar_time != STATE["last_bar"]:
         STATE["last_bar"] = bar_time
-        if last["signal"] in ("BUY", "SELL"):
-            _on_signal(last["signal"], STATE["spot"], chain)
+        side, mode, regime = engine.decide_entry(last, df, STATE["adx"])
+        STATE["regime"] = regime
+        if side:
+            _on_signal(side, STATE["spot"], chain, mode)
 
 
-def _on_signal(signal, spot, chain):
+def _on_signal(signal, spot, chain, mode="TREND"):
     want = "CE" if signal == "BUY" else "PE"
     for pos in list(STATE["open"]):
         if pos["opt_type"] != want:
-            _exit(pos, spot, chain, "OPPOSITE")
+            _exit(pos, "OPPOSITE")
     if any(p["opt_type"] == want for p in STATE["open"]):
         return
     _check_day()
-    if STATE["trades_today"] >= config.MAX_TRADES_PER_DAY:
-        return _log("daily trade limit reached")
+    ok_gate, gmsg = engine.entry_gate(STATE["_df"], signal, mode, _now_ist().time())
+    if not ok_gate:
+        return _log(gmsg)
+    ok_risk, rmsg = engine.can_trade(STATE["trades_today"], STATE["consec_losses"], STATE["day_pnl"])
+    if not ok_risk:
+        STATE["halted"] = "halted" in rmsg
+        return _log(rmsg)
     if chain is None:
         return
     try:
@@ -141,40 +182,38 @@ def _on_signal(signal, spot, chain):
     if lots < 1:
         return _log(f"capital Rs.{round(STATE['capital'])} < 1 lot (Rs.{round(cost_lot)}); skip")
     qty = lots * config.LOT_SIZE
+    try:
+        sid = client.option_security_id("NIFTY", STATE["expiry"], opt["strike"], opt["type"])
+    except Exception:
+        sid = None
     STATE["open"].append({
         "signal": signal, "opt_type": opt["type"], "strike": opt["strike"],
-        "lots": lots, "qty": qty, "entry_ltp": ltp, "entry_spot": spot,
-        "delta": round(opt["delta"], 3), "peak_fav": 0.0,
+        "security_id": sid, "lots": lots, "qty": qty, "entry_ltp": ltp, "entry_spot": spot,
+        "delta": round(opt["delta"], 3), "peak_fav": 0.0, "mode": mode,
         "entry_time": _now_ist().strftime("%H:%M:%S"),
     })
     STATE["trades_today"] += 1
-    _log(f"ENTRY {signal} {opt['type']} {opt['strike']} x{lots}lot @Rs.{ltp} "
+    _log(f"ENTRY [{mode}] {signal} {opt['type']} {opt['strike']} x{lots}lot @Rs.{ltp} "
          f"(cost Rs.{round(cost_lot*lots)}, delta {round(opt['delta'],2)})")
 
 
-def _monitor(spot, chain):
-    if spot is None:
-        return
+def _monitor():
+    """Fast exit check — runs every 2s. Targets/stops on the REAL PREMIUM."""
     eod = _now_ist().time() >= dtime(15, 15)
+    df = STATE.get("_df")
     for pos in list(STATE["open"]):
-        fav = (spot - pos["entry_spot"]) if pos["opt_type"] == "CE" else (pos["entry_spot"] - spot)
-        fav_pct = fav / pos["entry_spot"] * 100
-        pos["peak_fav"] = max(pos["peak_fav"], fav_pct)
-        reason = None
-        if eod:
-            reason = "EOD_SQUAREOFF"
-        elif fav_pct >= config.PROFIT_TARGET_PCT:
-            reason = "TARGET"
-        elif -fav_pct >= config.HARD_STOP_PCT:
-            reason = "HARD_STOP"
-        elif config.BREAKEVEN_TRIGGER_PCT > 0 and pos["peak_fav"] >= config.BREAKEVEN_TRIGGER_PCT and fav_pct <= 0:
-            reason = "BREAKEVEN"
-        if reason:
-            _exit(pos, spot, chain, reason)
+        prem = pos.get("cur_ltp") or pos["entry_ltp"]
+        prem_pct = (prem - pos["entry_ltp"]) / pos["entry_ltp"] * 100
+        pos["prem_pct"] = round(prem_pct, 1)
+        pos["peak_prem"] = max(pos.get("peak_prem", 0.0), prem_pct)
+        should_exit, reason = engine.decide_exit(
+            df, pos["opt_type"], pos["entry_ltp"], prem, pos["peak_prem"], eod)
+        if should_exit:
+            _exit(pos, reason)
 
 
-def _exit(pos, spot, chain, reason):
-    ltp = client.option_ltp(chain, pos["strike"], pos["opt_type"]) if chain else 0
+def _exit(pos, reason):
+    ltp = pos.get("cur_ltp") or pos["entry_ltp"]
     if ltp <= 0:
         ltp = pos["entry_ltp"]
     pnl = (ltp - pos["entry_ltp"]) * pos["qty"]
@@ -182,6 +221,8 @@ def _exit(pos, spot, chain, reason):
     charges = 40 + 0.001 * sv + 0.0003503 * (bv + sv) + 0.00003 * bv + 0.18 * (40 + 0.0003503 * (bv + sv))
     pnl -= charges
     STATE["capital"] += pnl
+    STATE["day_pnl"] += pnl
+    STATE["consec_losses"] = STATE["consec_losses"] + 1 if pnl < 0 else 0
     pos.update(exit_ltp=ltp, exit_reason=reason, pnl=round(pnl, 2),
                exit_time=_now_ist().strftime("%H:%M:%S"))
     STATE["open"].remove(pos)
@@ -193,12 +234,27 @@ def _exit(pos, spot, chain, reason):
 def state_json():
     closed = STATE["closed"]
     wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
+    realized = STATE["capital"] - STATE["start_capital"]
+    upnl = sum(p.get("upnl", 0) for p in STATE["open"])
     return {
         "running": STATE["running"], "capital": round(STATE["capital"], 2),
         "start_capital": STATE["start_capital"], "spot": STATE["spot"],
         "expiry": STATE["expiry"], "trades_today": STATE["trades_today"],
-        "pnl": round(STATE["capital"] - STATE["start_capital"], 2),
+        "pnl": round(realized, 2), "unrealized": round(upnl, 2),
+        "total_pnl": round(realized + upnl, 2),
         "closed_count": len(closed), "wins": wins,
         "win_rate": round(100 * wins / len(closed), 1) if closed else 0,
+        "halted": STATE["halted"], "consec_losses": STATE["consec_losses"],
         "open": STATE["open"], "closed": closed[:50], "log": STATE["log"],
+        "sr": _get_sr(),
     }
+
+
+def _get_sr():
+    df = STATE.get("_df")
+    if df is None or len(df) < 20:
+        return {}
+    r, s = engine.recent_sr(df)      # RECENT-window S&R (shared engine)
+    return {"resistances": [round(x, 1) for x in r],
+            "supports": [round(x, 1) for x in s],
+            "regime": STATE.get("regime"), "adx": STATE.get("adx"), "warnings": []}
