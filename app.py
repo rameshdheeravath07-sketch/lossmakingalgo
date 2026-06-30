@@ -264,8 +264,9 @@ def test_settings():
         return {"ok": False, "msg": str(e)}
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 def healthz():
+    # GET and HEAD both supported (uptime monitors often use HEAD)
     return {"ok": True}
 
 
