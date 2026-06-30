@@ -5,7 +5,8 @@ Run:  uvicorn app:app --reload
 Open: http://127.0.0.1:8000
 """
 from __future__ import annotations
-import io, os, re, json, asyncio
+import io, os, re, json, asyncio, threading, time as _time
+import urllib.request
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
@@ -263,10 +264,31 @@ def test_settings():
         return {"ok": False, "msg": str(e)}
 
 
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+
+def _keep_alive_loop(url: str):
+    """Self-ping the public URL every 10 min so Render's free tier doesn't sleep.
+    NOTE: this only keeps it awake while it's already running — if the dyno ever
+    fully sleeps or restarts, only an EXTERNAL pinger can wake it again."""
+    while True:
+        _time.sleep(600)
+        try:
+            urllib.request.urlopen(url.rstrip("/") + "/healthz", timeout=15)
+        except Exception:
+            pass
+
+
 @app.on_event("startup")
 def _start_auto_scheduler():
-    """Auto-start paper trading at 9:15 IST and stop at 15:15, every weekday."""
+    """Auto-start paper trading at 9:15 IST and stop at 15:15, every weekday,
+    plus a self keep-alive ping on Render (uses RENDER_EXTERNAL_URL)."""
     paper_trader.start_scheduler()
+    ext = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("KEEPALIVE_URL")
+    if ext:
+        threading.Thread(target=_keep_alive_loop, args=(ext,), daemon=True).start()
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
