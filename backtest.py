@@ -55,6 +55,10 @@ def run_backtest(df: pd.DataFrame, option_delta: float = 0.6, capital: float = N
     adx_col = adx_series(df)                      # precomputed (fast)
     result = BacktestResult()
     equity = 0.0
+    balance = capital          # COMPOUNDING balance (reinvests profits each trade)
+    # position-sizing: fraction of balance deployed per trade (all-in = 1.0)
+    deploy = 1.0 if config.RISK_PER_TRADE_PCT <= 0 else \
+        min(1.0, config.RISK_PER_TRADE_PCT / config.PREMIUM_STOP_PCT)
 
     open_side = None
     entry_spot = entry_prem = 0.0
@@ -67,14 +71,16 @@ def run_backtest(df: pd.DataFrame, option_delta: float = 0.6, capital: float = N
         return max(entry_prem + move * option_delta - decay * bars_held, 0.05)
 
     def close(ts, prem, reason):
-        nonlocal equity, day_pnl, consec_losses
+        nonlocal equity, day_pnl, consec_losses, balance
         ret = max((prem - entry_prem) / entry_prem, -1.0)
-        pnl = ret * capital
-        buy_val, sell_val = capital, capital * (1 + ret)
+        position = max(balance * deploy, 0.0)          # reinvest: size off CURRENT balance
+        pnl = ret * position
+        buy_val, sell_val = position, position * (1 + ret)
         charges = 40 + 0.001 * sell_val + 0.0003503 * (buy_val + sell_val) + 0.00003 * buy_val \
-            + 0.18 * (40 + 0.0003503 * (buy_val + sell_val)) + 2 * (config.SLIPPAGE_PCT / 100) * capital
+            + 0.18 * (40 + 0.0003503 * (buy_val + sell_val)) + 2 * (config.SLIPPAGE_PCT / 100) * position
         pnl -= charges
         equity += pnl
+        balance += pnl                                 # COMPOUND
         day_pnl += pnl
         consec_losses = consec_losses + 1 if pnl < 0 else 0
         result.trades.append(Trade(entry_ts, open_side, round(entry_spot, 2),
