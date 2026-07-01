@@ -42,7 +42,7 @@ class Config:
     # ---- Position sizing (paper) ----
     # 0 = ALL-IN (old behaviour: buy as many lots as capital allows).
     # >0 = risk only this % of capital per trade (a -PREMIUM_STOP_PCT stop loses ~this %).
-    RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", 0))
+    RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", 9))
 
     # ---- VWAP-cross strategy (the validated one) ----
     VWAP_CROSS_POINTS = float(os.getenv("VWAP_CROSS_POINTS", 80))   # symmetric value used by sweeps
@@ -67,7 +67,7 @@ class Config:
     TRADE_ONLY_TRENDING = _bool(os.getenv("TRADE_ONLY_TRENDING"), True)
     ADX_MIN = float(os.getenv("ADX_MIN", 20))     # below this = sideways, no new trades
     # Blow-off exhaustion filter: skip CE if RSI overbought AND 9-EMA curve angle too steep
-    USE_BLOWOFF_FILTER = _bool(os.getenv("USE_BLOWOFF_FILTER"), False)
+    USE_BLOWOFF_FILTER = _bool(os.getenv("USE_BLOWOFF_FILTER"), True)
     BLOWOFF_RSI = float(os.getenv("BLOWOFF_RSI", 72))
     BLOWOFF_ANGLE = float(os.getenv("BLOWOFF_ANGLE", 50))
     # Circuit breaker: stop trading for the day after N losses in a row (bad day)
