@@ -58,7 +58,7 @@ services:
       - key: PREMIUM_TRAIL_ARM
         value: "10"
       - key: RISK_PER_TRADE_PCT
-        value: "10"             # risk 10% of capital per trade (not all-in)
+        value: "9"              # risk 9% of capital per trade (not all-in)
       - key: USE_SR_EXIT
         value: "false"
       - key: USE_PREMIUM_EXITS
