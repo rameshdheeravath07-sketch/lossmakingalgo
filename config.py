@@ -66,6 +66,10 @@ class Config:
     # Only trade in a trending market — skip sideways/choppy (ADX based)
     TRADE_ONLY_TRENDING = _bool(os.getenv("TRADE_ONLY_TRENDING"), True)
     ADX_MIN = float(os.getenv("ADX_MIN", 20))     # below this = sideways, no new trades
+    # Blow-off exhaustion filter: skip CE if RSI overbought AND 9-EMA curve angle too steep
+    USE_BLOWOFF_FILTER = _bool(os.getenv("USE_BLOWOFF_FILTER"), False)
+    BLOWOFF_RSI = float(os.getenv("BLOWOFF_RSI", 72))
+    BLOWOFF_ANGLE = float(os.getenv("BLOWOFF_ANGLE", 50))
     # Circuit breaker: stop trading for the day after N losses in a row (bad day)
     MAX_CONSEC_LOSSES = int(os.getenv("MAX_CONSEC_LOSSES", 2))  # arm break-even after this
 

@@ -59,6 +59,12 @@ services:
         value: "10"
       - key: RISK_PER_TRADE_PCT
         value: "9"              # risk 9% of capital per trade (not all-in)
+      - key: USE_BLOWOFF_FILTER
+        value: "true"           # skip CE if RSI>72 AND steep EMA angle (blow-off top)
+      - key: BLOWOFF_RSI
+        value: "72"
+      - key: BLOWOFF_ANGLE
+        value: "50"
       - key: USE_SR_EXIT
         value: "false"
       - key: USE_PREMIUM_EXITS
