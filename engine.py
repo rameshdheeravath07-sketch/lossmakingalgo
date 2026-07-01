@@ -56,14 +56,6 @@ def decide_entry(last_row, df, adx):
             side = "BUY" if last_row.get("above_new") else "SELL" if last_row.get("below_new") else None
         else:
             side = "BUY" if last_row.get("both_above") else "SELL" if last_row.get("both_below") else None
-        # Blow-off exhaustion filter: skip overbought + steep-angle entries
-        if side and config.USE_BLOWOFF_FILTER:
-            r = last_row.get("rsi"); a = last_row.get("ema_angle")
-            if r is not None and a is not None:
-                if side == "BUY" and r > config.BLOWOFF_RSI and a > config.BLOWOFF_ANGLE:
-                    side = None
-                elif side == "SELL" and r < (100 - config.BLOWOFF_RSI) and a < -config.BLOWOFF_ANGLE:
-                    side = None
         return side, "TREND", regime
     # sideways: either SKIP (trade only trends) or MEAN-REVERT
     if config.TRADE_ONLY_TRENDING:

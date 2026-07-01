@@ -55,11 +55,4 @@ def get_signals(df: pd.DataFrame, **_) -> pd.DataFrame:
     out["both_below"] = both_below
     out["above_new"] = both_above & ~both_above.shift(1, fill_value=False)
     out["below_new"] = both_below & ~both_below.shift(1, fill_value=False)
-    # RSI + 9-EMA curve angle (for the blow-off exhaustion filter)
-    delta = out["close"].diff()
-    up = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    dn = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    out["rsi"] = (100 - 100 / (1 + up / dn.replace(0, np.nan))).fillna(50)
-    slope = (out["ema9"] - out["ema9"].shift(8)) / 8.0
-    out["ema_angle"] = np.degrees(np.arctan(slope / 3.0))    # 3 pts/bar = 45 deg
     return out
