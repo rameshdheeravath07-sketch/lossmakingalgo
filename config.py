@@ -42,7 +42,7 @@ class Config:
     # ---- Position sizing (paper) ----
     # 0 = ALL-IN (old behaviour: buy as many lots as capital allows).
     # >0 = risk only this % of capital per trade (a -PREMIUM_STOP_PCT stop loses ~this %).
-    RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", 0))
+    RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", 9))
 
     # ---- VWAP-cross strategy (the validated one) ----
     VWAP_CROSS_POINTS = float(os.getenv("VWAP_CROSS_POINTS", 80))   # symmetric value used by sweeps

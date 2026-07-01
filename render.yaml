@@ -58,7 +58,7 @@ services:
       - key: PREMIUM_TRAIL_ARM
         value: "10"
       - key: RISK_PER_TRADE_PCT
-        value: "0"              # 0 = all-in. Set to 9 to cap losses per trade.
+        value: "9"              # risk 9% of the compounding balance per trade
       - key: USE_SR_EXIT
         value: "false"
       - key: USE_PREMIUM_EXITS
