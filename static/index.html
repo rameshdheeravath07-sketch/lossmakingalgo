@@ -118,6 +118,11 @@
         <button style="background:#b45309" onclick="ppWithdraw()">🏧 Withdraw</button>
         <span style="font-size:12px;color:var(--mut)">Takes cash out of the balance; trading continues on what's left.</span>
       </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">
+        <div style="flex:0 0 200px"><label>Risk per trade % <span id="ppRiskCur" style="color:var(--mut)"></span></label><input id="ppRisk" value="10"></div>
+        <button style="background:#7c3aed" onclick="ppSetRisk()">🎯 Set Risk</button>
+        <span style="font-size:12px;color:var(--mut)">How much of your balance one trade can lose (0 = all-in). Applies to backtest + paper.</span>
+      </div>
     </section>
     <section class="card">
       <h3 style="margin:0 0 8px">🏦 Account (saved)</h3>
@@ -214,7 +219,8 @@ async function post(u,b){return (await fetch(u,{method:'POST',headers:{'Content-
 function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instrument_type:'INDEX',
   interval:$('itv').value,days:parseInt($('days').value),option_delta:parseFloat($('delta').value),capital:parseFloat($('cap').value)};}
 async function loadCfg(){const c=await(await fetch('/api/config')).json();
-  $('cfg').textContent=`VWAP ${c.vwap_points}pt · PREMIUM target +${c.premium_target}% / stop -${c.premium_stop}% / BE +${c.premium_be}% / trail ${c.premium_trail}% · ₹${c.capital} · max ${c.max_trades_day}/day`;}
+  $('cfg').textContent=`VWAP ${c.vwap_points}pt · PREMIUM target +${c.premium_target}% / stop -${c.premium_stop}% / BE +${c.premium_be}% / trail ${c.premium_trail}% · risk ${c.risk_pct}%/trade · ₹${c.capital} · max ${c.max_trades_day}/day`;
+  if($('ppRisk')){$('ppRisk').value=c.risk_pct;$('ppRiskCur').textContent='(now '+c.risk_pct+'%)';}}
 function renderBT(r){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
   const s=r.summary;let h='';if(r.candles)h+=`<p style="color:var(--mut);font-size:12px">${r.candles} candles · ${r.from} → ${r.to}</p>`;
   h+=`<div class="grid3"><div class="stat"><div class="v">${s.trades}</div><div class="k">Trades</div></div>
@@ -244,6 +250,7 @@ async function ppStart(){const r=await post('/api/paper/start',{capital:parseFlo
 async function ppStop(){await post('/api/paper/stop',{});ppAccount();}
 async function ppReset(){if(!confirm('Set a NEW balance? This wipes saved history and starts fresh.'))return;const r=await post('/api/paper/reset',{amount:parseFloat($('ppCap').value)});alert(r.result);ppAccount();}
 async function ppWithdraw(){const a=parseFloat($('ppWd').value);if(!a){alert('Enter an amount');return;}const r=await post('/api/paper/withdraw',{amount:a});alert(r.result);$('ppWd').value='';ppAccount();}
+async function ppSetRisk(){const p=parseFloat($('ppRisk').value);const r=await post('/api/set-risk',{pct:p});alert(r.msg);$('ppRiskCur').textContent='(now '+r.risk_pct+'%)';loadCfg();}
 async function ppAccount(){const a=await(await fetch('/api/paper/account')).json();
   $('acBal').textContent='₹'+(a.capital??0);
   $('acInit').textContent='₹'+(a.initial??0);

@@ -63,8 +63,20 @@ def get_config():
         "premium_target": config.PREMIUM_TARGET_PCT, "premium_stop": config.PREMIUM_STOP_PCT,
         "premium_be": config.PREMIUM_BE_PCT, "premium_trail": config.PREMIUM_TRAIL_PCT,
         "capital": config.CAPITAL_PER_TRADE, "max_trades_day": config.MAX_TRADES_PER_DAY,
-        "square_off": config.INTRADAY_ONLY,
+        "square_off": config.INTRADAY_ONLY, "risk_pct": config.RISK_PER_TRADE_PCT,
     }
+
+
+class RiskReq(BaseModel):
+    pct: float = 10
+
+
+@app.post("/api/set-risk")
+def set_risk(req: RiskReq):
+    """Choose risk-per-trade % live (0 = all-in). Applies to backtest + paper."""
+    p = max(0.0, min(100.0, float(req.pct)))
+    config.RISK_PER_TRADE_PCT = p
+    return {"risk_pct": p, "msg": f"risk per trade set to {p}%" if p > 0 else "ALL-IN mode"}
 
 
 @app.post("/api/backtest-dhan")
