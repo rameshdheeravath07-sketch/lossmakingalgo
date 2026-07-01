@@ -56,6 +56,30 @@ def _trades(res):
              "reason": t.exit_reason, "pnl": t.pnl_rupees} for t in res.trades]
 
 
+def _breakdown(res):
+    """Aggregate closed trades by month (YYYY-MM) and by day (YYYY-MM-DD)."""
+    from collections import defaultdict
+    months = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})
+    days = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})
+    for t in res.trades:
+        if t.exit_price is None:
+            continue
+        d = str(t.entry_time)[:10]           # YYYY-MM-DD
+        for key, agg in ((d[:7], months), (d, days)):
+            a = agg[key]; a["trades"] += 1; a["pnl"] += t.pnl_rupees
+            if t.pnl_rupees > 0:
+                a["wins"] += 1
+    def fmt(agg):
+        rows = []
+        for k in sorted(agg):
+            a = agg[k]
+            rows.append({"period": k, "trades": a["trades"], "wins": a["wins"],
+                         "win_rate": round(100 * a["wins"] / a["trades"], 1) if a["trades"] else 0,
+                         "pnl": round(a["pnl"], 2)})
+        return rows
+    return {"months": fmt(months), "days": fmt(days)}
+
+
 @app.get("/api/config")
 def get_config():
     return {
@@ -84,7 +108,7 @@ def backtest_dhan(req: DhanRequest):
     df = _fetch(req)
     res = run_backtest(df, option_delta=req.option_delta, capital=req.capital)
     return {"candles": len(df), "from": str(df.index[0]), "to": str(df.index[-1]),
-            "summary": res.summary(), "trades": _trades(res)}
+            "summary": res.summary(), "trades": _trades(res), "breakdown": _breakdown(res)}
 
 
 @app.post("/api/sweep-vwap")

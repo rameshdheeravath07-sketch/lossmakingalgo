@@ -89,6 +89,10 @@
         <div><label>Capital (₹)</label><input id="cap" value="15000"></div>
         <div><label>Inspect bar time</label><input id="at" placeholder="2026-06-25 06:30:00"></div>
       </div>
+      <div style="display:flex;gap:18px;margin:8px 0;font-size:13px;color:var(--mut)">
+        <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="tglMonth" style="width:auto" onchange="if(window._lastBT)renderBT(window._lastBT)"> 📅 Month-wise</label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="tglDay" style="width:auto" onchange="if(window._lastBT)renderBT(window._lastBT)"> 📆 Day-wise</label>
+      </div>
       <button style="background:var(--green)" onclick="bt()">⬇ Fetch from Dhan & Backtest</button>
       <button style="background:#0a7ea4" onclick="sweepVwap()">📐 VWAP Threshold Sweep</button>
       <button style="background:#0e7490" onclick="sweepTgt()">🎯 Profit-Target Sweep</button>
@@ -221,13 +225,18 @@ function body(){return{security_id:$('sec').value,exchange_segment:'IDX_I',instr
 async function loadCfg(){const c=await(await fetch('/api/config')).json();
   $('cfg').textContent=`VWAP ${c.vwap_points}pt · PREMIUM target +${c.premium_target}% / stop -${c.premium_stop}% / BE +${c.premium_be}% / trail ${c.premium_trail}% · risk ${c.risk_pct}%/trade · ₹${c.capital} · max ${c.max_trades_day}/day`;
   if($('ppRisk')){$('ppRisk').value=c.risk_pct;$('ppRiskCur').textContent='(now '+c.risk_pct+'%)';}}
-function renderBT(r){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
+function bdTable(rows,label){let h=`<h4 style="margin:16px 0 4px">${label}</h4><table><thead><tr><th>${label.includes('Month')?'Month':'Day'}</th><th>Trades</th><th>Win%</th><th>P&L</th></tr></thead><tbody>`;
+  rows.forEach(x=>h+=`<tr><td>${x.period}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td class="${x.pnl>=0?'pos':'neg'}">₹${x.pnl}</td></tr>`);
+  return h+'</tbody></table>';}
+function renderBT(r){window._lastBT=r;if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
   const s=r.summary;let h='';if(r.candles)h+=`<p style="color:var(--mut);font-size:12px">${r.candles} candles · ${r.from} → ${r.to}</p>`;
   h+=`<div class="grid3"><div class="stat"><div class="v">${s.trades}</div><div class="k">Trades</div></div>
     <div class="stat"><div class="v">${s.win_rate}%</div><div class="k">Win rate</div></div>
     <div class="stat"><div class="v ${s.net_pnl>=0?'pos':'neg'}">₹${s.net_pnl}</div><div class="k">Net P&L</div></div></div>
     <p style="font-size:12px;color:var(--mut)">Wins ${s.wins} · Losses ${s.losses} · PF ${s.profit_factor??'—'} · Avg ₹${s.avg_pnl}</p>`;
-  h+='<table><thead><tr><th>Entry</th><th>Side</th><th>In</th><th>Out</th><th>Why exit</th><th>P&L</th></tr></thead><tbody>';
+  if(r.breakdown){if($('tglMonth')&&$('tglMonth').checked)h+=bdTable(r.breakdown.months,'📅 Month-wise');
+    if($('tglDay')&&$('tglDay').checked)h+=bdTable(r.breakdown.days,'📆 Day-wise');}
+  h+='<h4 style="margin:16px 0 4px">Trades</h4><table><thead><tr><th>Entry</th><th>Side</th><th>In</th><th>Out</th><th>Why exit</th><th>P&L</th></tr></thead><tbody>';
   r.trades.slice(-40).reverse().forEach(t=>h+=`<tr><td>${t.entry_time}</td><td>${t.side}</td><td>${t.entry}</td><td>${t.exit}</td><td style="color:var(--mut)">${t.reason}</td><td class="${t.pnl>=0?'pos':'neg'}">₹${t.pnl}</td></tr>`);
   $('out').innerHTML=h+'</tbody></table>';}
 function renderSweep(r,key,label){if(r.detail){$('out').innerHTML='<p class="neg">'+r.detail+'</p>';return;}
