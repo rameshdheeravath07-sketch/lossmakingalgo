@@ -24,6 +24,25 @@ def regime_from_adx(adx):
     return "TRENDING" if adx >= config.ADX_MIN else "SIDEWAYS"
 
 
+def size_lots(capital, entry_ltp):
+    """How many lots to buy. RISK_PER_TRADE_PCT=0 -> all-in (as many as affordable).
+    Otherwise size so a -PREMIUM_STOP_PCT stop loses ~RISK_PER_TRADE_PCT% of capital.
+    Never exceeds what's affordable; floors at 1 lot if at least one is affordable."""
+    cost_lot = entry_ltp * config.LOT_SIZE
+    if cost_lot <= 0:
+        return 0
+    affordable = int(capital // cost_lot)
+    if affordable < 1:
+        return 0
+    if config.RISK_PER_TRADE_PCT <= 0:
+        return affordable                         # all-in (old behaviour)
+    risk_budget = capital * config.RISK_PER_TRADE_PCT / 100.0
+    per_lot_risk = cost_lot * config.PREMIUM_STOP_PCT / 100.0
+    lots = int(risk_budget // per_lot_risk) if per_lot_risk > 0 else affordable
+    lots = min(lots, affordable)
+    return max(lots, 1)                            # small capital -> at least 1 lot
+
+
 def decide_entry(last_row, df, adx):
     """
     Decide direction + mode from current conditions.

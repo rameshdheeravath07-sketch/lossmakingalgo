@@ -264,7 +264,7 @@ def _on_signal(signal, spot, chain, mode="TREND"):
     if ltp <= 0:
         return _log(f"strike {opt['strike']} has no LTP; skip")
     cost_lot = ltp * config.LOT_SIZE
-    lots = int(STATE["capital"] // cost_lot)
+    lots = engine.size_lots(STATE["capital"], ltp)     # risk-based sizing (shared engine)
     if lots < 1:
         return _log(f"capital Rs.{round(STATE['capital'])} < 1 lot (Rs.{round(cost_lot)}); skip")
     qty = lots * config.LOT_SIZE

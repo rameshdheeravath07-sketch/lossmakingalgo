@@ -39,6 +39,11 @@ class Config:
     LIVE_TRADING = _bool(os.getenv("LIVE_TRADING"), False)   # master switch (keep False until proven)
     MAX_LOTS = int(os.getenv("MAX_LOTS", 1))                 # hard cap on lots per trade
 
+    # ---- Position sizing (paper) ----
+    # 0 = ALL-IN (old behaviour: buy as many lots as capital allows).
+    # >0 = risk only this % of capital per trade (a -PREMIUM_STOP_PCT stop loses ~this %).
+    RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", 0))
+
     # ---- VWAP-cross strategy (the validated one) ----
     VWAP_CROSS_POINTS = float(os.getenv("VWAP_CROSS_POINTS", 80))   # symmetric value used by sweeps
     VWAP_POINTS_EMA9 = float(os.getenv("VWAP_POINTS_EMA9", 60))     # 9 EMA distance from VWAP
