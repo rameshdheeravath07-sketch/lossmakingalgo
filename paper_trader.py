@@ -34,6 +34,11 @@ STATE = {
     "last_bar": None, "trades_today": 0, "trade_day": None, "params": {},
     "consec_losses": 0, "halted": False, "day_pnl": 0.0, "regime": None, "adx": 0,
     "day_start_capital": 0.0, "day_wins": 0, "auto": False,
+    # Manual-Confirm mode: bot proposes, HUMAN approves/skips; bot's own picks
+    # are shadow-tracked in parallel so we can score You vs Bot.
+    "confirm_mode": False, "pending": None,
+    "virtual_open": [], "virtual_closed": [],
+    "bot_pnl": 0.0, "user_approved": 0, "user_skipped": 0,
 }
 _stop = threading.Event()
 _thread = None
@@ -107,6 +112,8 @@ def start(capital=None, interval="3", ignore_hours=False, auto=False):
                  trades_today=0, day_pnl=0.0, consec_losses=0, halted=False,
                  trade_day=_now_ist().date().isoformat(),
                  expiry=exps[0] if exps else None,
+                 pending=None, virtual_open=[], virtual_closed=[],
+                 bot_pnl=0.0, user_approved=0, user_skipped=0,
                  params={"interval": str(interval), "ignore_hours": ignore_hours})
     _stop.clear()
     _thread = threading.Thread(target=_loop, daemon=True)
@@ -188,20 +195,24 @@ def _tick_loop():
     while not _stop.is_set():
         try:
             secs = {"IDX_I": [config.UNDER_SCRIP]}
-            fno = [int(p["security_id"]) for p in STATE["open"] if p.get("security_id")]
+            watch = list(STATE["open"]) + list(STATE["virtual_open"]) \
+                + ([STATE["pending"]] if STATE.get("pending") else [])
+            fno = list({int(p["security_id"]) for p in watch if p.get("security_id")})
             if fno:
                 secs["NSE_FNO"] = fno
             q = client.ltp_quote(secs)
             sp = q.get("IDX_I", {}).get(str(config.UNDER_SCRIP))
             if sp:
                 STATE["spot"] = sp
-            for p in STATE["open"]:
+            for p in watch:
                 if p.get("security_id"):
                     lt = q.get("NSE_FNO", {}).get(str(p["security_id"]))
                     if lt:
                         p["cur_ltp"] = lt
                         p["upnl"] = round((lt - p["entry_ltp"]) * p["qty"], 2)
             _monitor()      # FAST exits — target/stop/breakeven/S&R checked every 2s
+            _monitor_virtual()
+            _expire_pending()
         except Exception:
             pass
         _stop.wait(2)
@@ -263,24 +274,70 @@ def _on_signal(signal, spot, chain, mode="TREND"):
     ltp = opt["ltp"]
     if ltp <= 0:
         return _log(f"strike {opt['strike']} has no LTP; skip")
-    cost_lot = ltp * config.LOT_SIZE
-    lots = engine.size_lots(STATE["capital"], ltp)     # risk-based sizing (shared engine)
+    lots = engine.size_lots(STATE["capital"], ltp)
     if lots < 1:
-        return _log(f"capital Rs.{round(STATE['capital'])} < 1 lot (Rs.{round(cost_lot)}); skip")
-    qty = lots * config.LOT_SIZE
+        return _log(f"capital Rs.{round(STATE['capital'])} < 1 lot (Rs.{round(ltp*config.LOT_SIZE)}); skip")
     try:
         sid = client.option_security_id("NIFTY", STATE["expiry"], opt["strike"], opt["type"])
     except Exception:
         sid = None
-    STATE["open"].append({
-        "signal": signal, "opt_type": opt["type"], "strike": opt["strike"],
-        "security_id": sid, "lots": lots, "qty": qty, "entry_ltp": ltp, "entry_spot": spot,
-        "delta": round(opt["delta"], 3), "peak_fav": 0.0, "mode": mode,
-        "entry_time": _now_ist().strftime("%H:%M:%S"),
-    })
+    proposal = {"signal": signal, "opt_type": opt["type"], "strike": opt["strike"],
+                "security_id": sid, "lots": lots, "qty": lots * config.LOT_SIZE,
+                "entry_ltp": ltp, "entry_spot": spot, "delta": round(opt["delta"], 3),
+                "mode": mode, "entry_time": _now_ist().strftime("%H:%M:%S")}
+
+    # Bot's shadow track ALWAYS takes its own signal (for You-vs-Bot scoring)
+    if STATE["confirm_mode"]:
+        _virtual_enter(proposal)
+        if STATE["pending"] is None:
+            proposal["expires_at"] = (_now_ist() + __import__("datetime").timedelta(seconds=180)).strftime("%H:%M:%S")
+            STATE["pending"] = proposal
+            _log(f"🧠 SIGNAL {signal} {opt['type']} {opt['strike']} @Rs.{ltp} — WAITING for your Approve/Skip (3 min)")
+    else:
+        _enter(proposal)
+
+
+def _enter(p):
+    STATE["open"].append({**p, "peak_fav": 0.0})
     STATE["trades_today"] += 1
-    _log(f"ENTRY [{mode}] {signal} {opt['type']} {opt['strike']} x{lots}lot @Rs.{ltp} "
-         f"(cost Rs.{round(cost_lot*lots)}, delta {round(opt['delta'],2)})")
+    _log(f"ENTRY [{p['mode']}] {p['signal']} {p['opt_type']} {p['strike']} x{p['lots']}lot "
+         f"@Rs.{p['entry_ltp']} (cost Rs.{round(p['entry_ltp']*p['qty'])})")
+
+
+def _virtual_enter(p):
+    """Bot's shadow position — no capital, used to score the bot's own choices."""
+    STATE["virtual_open"].append({**p, "peak_prem": 0.0})
+
+
+def approve_pending():
+    p = STATE["pending"]
+    if not p:
+        return "no pending signal"
+    STATE["pending"] = None
+    STATE["user_approved"] += 1
+    live = p.get("cur_ltp") or p["entry_ltp"]
+    p["entry_ltp"] = live                      # enter at current premium, not stale quote
+    _enter(p)
+    _log(f"✅ YOU APPROVED {p['signal']} {p['opt_type']} {p['strike']}")
+    return "approved & entered"
+
+
+def skip_pending():
+    p = STATE["pending"]
+    if not p:
+        return "no pending signal"
+    STATE["pending"] = None
+    STATE["user_skipped"] += 1
+    _log(f"⏭ YOU SKIPPED {p['signal']} {p['opt_type']} {p['strike']} (bot still shadow-trades it)")
+    return "skipped (bot shadow continues)"
+
+
+def set_confirm_mode(on):
+    STATE["confirm_mode"] = bool(on)
+    if not on:
+        STATE["pending"] = None
+    _log(f"🧠 Manual-Confirm mode {'ON — you approve every entry' if on else 'OFF — bot auto-trades'}")
+    return f"confirm mode {'on' if on else 'off'}"
 
 
 def _monitor():
@@ -296,6 +353,38 @@ def _monitor():
             df, pos["opt_type"], pos["entry_ltp"], prem, pos["peak_prem"], eod)
         if should_exit:
             _exit(pos, reason)
+
+
+def _monitor_virtual():
+    """Exit checks for the bot's shadow positions (same engine rules)."""
+    eod = _now_ist().time() >= dtime(15, 15)
+    df = STATE.get("_df")
+    for pos in list(STATE["virtual_open"]):
+        prem = pos.get("cur_ltp") or pos["entry_ltp"]
+        prem_pct = (prem - pos["entry_ltp"]) / pos["entry_ltp"] * 100
+        pos["prem_pct"] = round(prem_pct, 1)
+        pos["peak_prem"] = max(pos.get("peak_prem", 0.0), prem_pct)
+        should_exit, reason = engine.decide_exit(
+            df, pos["opt_type"], pos["entry_ltp"], prem, pos["peak_prem"], eod)
+        if should_exit:
+            pnl = (prem - pos["entry_ltp"]) * pos["qty"]
+            bv, sv = pos["entry_ltp"] * pos["qty"], prem * pos["qty"]
+            pnl -= 40 + 0.001 * sv + 0.0003503 * (bv + sv) + 0.00003 * bv \
+                + 0.18 * (40 + 0.0003503 * (bv + sv))
+            pos.update(exit_ltp=prem, exit_reason=reason, pnl=round(pnl, 2),
+                       exit_time=_now_ist().strftime("%H:%M:%S"))
+            STATE["virtual_open"].remove(pos)
+            STATE["virtual_closed"].insert(0, pos)
+            STATE["bot_pnl"] += pnl
+            _log(f"🤖 BOT-shadow exit [{reason}] {pos['opt_type']} {pos['strike']} P&L Rs.{round(pnl)}")
+
+
+def _expire_pending():
+    p = STATE.get("pending")
+    if p and _now_ist().strftime("%H:%M:%S") > p.get("expires_at", "23:59:59"):
+        STATE["pending"] = None
+        STATE["user_skipped"] += 1
+        _log("⌛ pending signal expired (counted as skip; bot shadow continues)")
 
 
 def _exit(pos, reason):
@@ -349,6 +438,17 @@ def state_json():
         "halted": STATE["halted"], "consec_losses": STATE["consec_losses"],
         "open": STATE["open"], "closed": closed[:50], "log": STATE["log"],
         "sr": _get_sr(), "auto": STATE.get("auto", False),
+        # Manual-Confirm mode + You-vs-Bot scoreboard
+        "confirm_mode": STATE.get("confirm_mode", False),
+        "pending": STATE.get("pending"),
+        "you_vs_bot": {
+            "bot_pnl": round(STATE.get("bot_pnl", 0.0), 2),
+            "bot_trades": len(STATE.get("virtual_closed", [])),
+            "bot_wins": sum(1 for t in STATE.get("virtual_closed", []) if t.get("pnl", 0) > 0),
+            "you_pnl": round(realized, 2),
+            "approved": STATE.get("user_approved", 0),
+            "skipped": STATE.get("user_skipped", 0),
+        },
     }
 
 

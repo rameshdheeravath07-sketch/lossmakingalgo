@@ -127,6 +127,28 @@
         <button style="background:#7c3aed" onclick="ppSetRisk()">🎯 Set Risk</button>
         <span style="font-size:12px;color:var(--mut)">How much of your balance one trade can lose (0 = all-in). Applies to backtest + paper.</span>
       </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+        <button id="cmBtn" style="background:#6e7681;width:auto;padding:11px 16px" onclick="ppConfirmMode()">🧠 Manual-Confirm: OFF</button>
+        <span style="font-size:12px;color:var(--mut)">ON = bot proposes each entry and WAITS for you to Approve/Skip. The bot shadow-trades its own picks so you can compare You vs Bot.</span>
+      </div>
+    </section>
+    <section class="card" id="pendCard" style="display:none;border:2px solid #f59e0b">
+      <h3 style="margin:0 0 6px">🚨 Signal waiting for YOUR decision</h3>
+      <p id="pendTxt" style="font-size:15px;font-weight:600"></p>
+      <div style="display:flex;gap:10px">
+        <button style="background:var(--green)" onclick="ppApprove()">✅ Approve — take the trade</button>
+        <button style="background:var(--red)" onclick="ppSkip()">⏭ Skip — I think it flips</button>
+      </div>
+    </section>
+    <section class="card" id="yvbCard" style="display:none">
+      <h3 style="margin:0 0 8px">🧠 You vs 🤖 Bot</h3>
+      <div class="grid4">
+        <div class="stat"><div class="v" id="yvbYou">—</div><div class="k">YOUR P&L (approved)</div></div>
+        <div class="stat"><div class="v" id="yvbBot">—</div><div class="k">BOT shadow P&L (all signals)</div></div>
+        <div class="stat"><div class="v" id="yvbDec">—</div><div class="k">Approved / Skipped</div></div>
+        <div class="stat"><div class="v" id="yvbBotW">—</div><div class="k">Bot trades (wins)</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--mut);margin-top:8px">If YOUR P&L beats the bot's over 2–3 weeks, your chart-reading adds real value — then we encode it. If not, the bot earns your trust.</p>
     </section>
     <section class="card">
       <h3 style="margin:0 0 8px">🏦 Account (saved)</h3>
@@ -260,6 +282,11 @@ async function ppStop(){await post('/api/paper/stop',{});ppAccount();}
 async function ppReset(){if(!confirm('Set a NEW balance? This wipes saved history and starts fresh.'))return;const r=await post('/api/paper/reset',{amount:parseFloat($('ppCap').value)});alert(r.result);ppAccount();}
 async function ppWithdraw(){const a=parseFloat($('ppWd').value);if(!a){alert('Enter an amount');return;}const r=await post('/api/paper/withdraw',{amount:a});alert(r.result);$('ppWd').value='';ppAccount();}
 async function ppSetRisk(){const p=parseFloat($('ppRisk').value);const r=await post('/api/set-risk',{pct:p});alert(r.msg);$('ppRiskCur').textContent='(now '+r.risk_pct+'%)';loadCfg();}
+let _cmOn=false;
+async function ppConfirmMode(){_cmOn=!_cmOn;await post('/api/paper/confirm-mode',{on:_cmOn});
+  const b=$('cmBtn');b.textContent='🧠 Manual-Confirm: '+(_cmOn?'ON':'OFF');b.style.background=_cmOn?'#f59e0b':'#6e7681';}
+async function ppApprove(){await post('/api/paper/approve',{});}
+async function ppSkip(){await post('/api/paper/skip',{});}
 async function ppAccount(){const a=await(await fetch('/api/paper/account')).json();
   $('acBal').textContent='₹'+(a.capital??0);
   $('acInit').textContent='₹'+(a.initial??0);
@@ -307,6 +334,20 @@ function startSSE(){
 function updatePP(s){
   const p=$('ppPill');p.textContent=s.running?'RUNNING':'OFF';p.className='pill '+(s.running?'live':'off');
   const ap=$('ppAuto');if(ap){ap.textContent=s.auto?'AUTO ▶ running':'AUTO 9:15–15:15';ap.className='pill '+(s.auto?'live':'off');}
+  // Manual-Confirm: pending banner + You-vs-Bot scoreboard
+  if(typeof s.confirm_mode==='boolean'&&s.confirm_mode!==_cmOn){_cmOn=s.confirm_mode;
+    const b=$('cmBtn');if(b){b.textContent='🧠 Manual-Confirm: '+(_cmOn?'ON':'OFF');b.style.background=_cmOn?'#f59e0b':'#6e7681';}}
+  const pc=$('pendCard');
+  if(pc){if(s.pending){pc.style.display='block';const g=s.pending;
+      $('pendTxt').textContent=`${g.signal} ${g.opt_type} ${g.strike} @ ₹${g.cur_ltp||g.entry_ltp} · ${g.lots} lot · expires ${g.expires_at}`;}
+    else pc.style.display='none';}
+  const yb=$('yvbCard');
+  if(yb&&s.you_vs_bot&&(s.confirm_mode||s.you_vs_bot.bot_trades>0)){yb.style.display='block';const v=s.you_vs_bot;
+    $('yvbYou').innerHTML=`<span class="${v.you_pnl>=0?'pos':'neg'}">₹${v.you_pnl}</span>`;
+    $('yvbBot').innerHTML=`<span class="${v.bot_pnl>=0?'pos':'neg'}">₹${v.bot_pnl}</span>`;
+    $('yvbDec').textContent=`${v.approved} / ${v.skipped}`;
+    $('yvbBotW').textContent=`${v.bot_trades} (${v.bot_wins}W)`;}
+  else if(yb)yb.style.display='none';
   $('ppCapV').textContent='₹'+(s.capital??0);
   $('ppPnl').innerHTML=`<span class="${(s.pnl??0)>=0?'pos':'neg'}">₹${s.pnl??0}</span>`;
   $('ppUpnl').innerHTML=`<span class="${(s.unrealized??0)>=0?'pos':'neg'}">₹${s.unrealized??0}</span>`;

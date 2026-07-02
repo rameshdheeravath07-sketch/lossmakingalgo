@@ -195,6 +195,26 @@ def paper_account():
     return paper_trader.account_state()
 
 
+class ConfirmModeReq(BaseModel):
+    on: bool = True
+
+
+@app.post("/api/paper/confirm-mode")
+def paper_confirm_mode(req: ConfirmModeReq):
+    """Manual-Confirm: bot proposes entries, YOU approve/skip; bot shadow-trades in parallel."""
+    return {"result": paper_trader.set_confirm_mode(req.on)}
+
+
+@app.post("/api/paper/approve")
+def paper_approve():
+    return {"result": paper_trader.approve_pending()}
+
+
+@app.post("/api/paper/skip")
+def paper_skip():
+    return {"result": paper_trader.skip_pending()}
+
+
 @app.get("/api/paper/state")
 def paper_state():
     return paper_trader.state_json()
